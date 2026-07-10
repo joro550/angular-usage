@@ -1,0 +1,16 @@
+<div class="w-screen h-screen overflow-hidden relative">
+  @switch (state.viewMode()) {
+    @case ('upload') {
+      <app-upload />
+    }
+    @case ('overview') {
+      <app-overview class="absolute inset-0" />
+    }
+    @case ('component') {
+      <app-component-detail class="absolute inset-0" />
+    }
+    @case ('function') {
+      <app-function-detail class="absolute inset-0" />
+    }
+  }
+</div>
