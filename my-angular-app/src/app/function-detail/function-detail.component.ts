@@ -1,11 +1,13 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { MethodNode, ClassProperty, PropertyKind } from '../models/project.model';
 import { StateService } from '../services/state.service';
+import {
+  FlowParserService,
+  FlowDisplayItem,
+} from '../services/flow-parser.service';
 
 interface CalledMethodCard {
   method: MethodNode;
-  x: number;
-  y: number;
 }
 
 interface PropChip {
@@ -25,6 +27,8 @@ const PROP_COLORS: Record<PropertyKind, { bg: string; text: string }> = {
   regular:  { bg: 'rgba(71,85,105,0.12)',   text: '#64748b' },
 };
 
+export type DetailTab = 'overview' | 'flow';
+
 @Component({
   selector: 'app-function-detail',
   standalone: true,
@@ -32,29 +36,29 @@ const PROP_COLORS: Record<PropertyKind, { bg: string; text: string }> = {
 })
 export class FunctionDetailComponent {
   readonly state = inject(StateService);
+  private readonly parser = inject(FlowParserService);
 
   readonly method = computed(() => this.state.selectedMethod()!);
   readonly comp = computed(() => this.state.selectedComponent());
+
+  readonly activeTab = signal<DetailTab>('overview');
+
+  // ── Overview tab ──────────────────────────────────────────────────────────
 
   readonly calledMethodCards = computed<CalledMethodCard[]>(() => {
     const method = this.method();
     const comp = this.comp();
     if (!comp) return [];
-
     return method.calledMethods
-      .map((name, i) => {
-        const m = comp.methods.find(m => m.name === name);
-        if (!m) return null;
-        return { method: m, x: 0, y: 0 } as CalledMethodCard;
-      })
-      .filter(Boolean) as CalledMethodCard[];
+      .map(name => comp.methods.find(m => m.name === name))
+      .filter(Boolean)
+      .map(m => ({ method: m! }));
   });
 
   readonly propChips = computed<PropChip[]>(() => {
     const method = this.method();
     const comp = this.comp();
     if (!comp) return [];
-
     return method.touchedProperties
       .map(name => {
         const prop = comp.properties.find(p => p.name === name);
@@ -64,6 +68,56 @@ export class FunctionDetailComponent {
       })
       .filter(Boolean) as PropChip[];
   });
+
+  // ── Flow / simulation tab ─────────────────────────────────────────────────
+
+  /** All class properties that this method touches — the set we offer inputs for. */
+  readonly simProps = computed<ClassProperty[]>(() => {
+    const comp = this.comp();
+    if (!comp) return [];
+    return this.method().touchedProperties
+      .map(name => comp.properties.find(p => p.name === name))
+      .filter(Boolean) as ClassProperty[];
+  });
+
+  readonly simValues = this.state.simulationValues;
+
+  /** Parse the method body into a flow tree, then evaluate with current values. */
+  readonly displayItems = computed<FlowDisplayItem[]>(() => {
+    const body = this.method().body;
+    if (!body?.trim()) return [];
+    const nodes = this.parser.parse(body);
+    const evaluated = this.parser.evaluate(nodes, this.simValues());
+    return this.parser.flatten(evaluated);
+  });
+
+  /** True if any simulation value has been entered. */
+  readonly hasSimValues = computed(() =>
+    Object.values(this.simValues()).some(v => v.trim() !== ''),
+  );
+
+  /** Count of branches that could be evaluated. */
+  readonly resolvedBranches = computed(() =>
+    this.displayItems().filter(i => i.type === 'if-head' && i.result !== null).length,
+  );
+
+  readonly totalBranches = computed(() =>
+    this.displayItems().filter(i => i.type === 'if-head' && !i.isElse).length,
+  );
+
+  onSimInput(name: string, event: Event): void {
+    this.state.setSimValue(name, (event.target as HTMLInputElement).value);
+  }
+
+  clearSimValues(): void {
+    this.state.clearSimValues();
+  }
+
+  propKindColor(kind: PropertyKind): string {
+    return PROP_COLORS[kind]?.text ?? '#94a3b8';
+  }
+
+  // ── Shared helpers ────────────────────────────────────────────────────────
 
   navigateToMethod(method: MethodNode): void {
     this.state.selectMethod(method);
@@ -79,6 +133,10 @@ export class FunctionDetailComponent {
     const body = this.method().body;
     if (!body) return '// (no body detected)';
     const trimmed = body.trim();
-    return trimmed.length > 1500 ? trimmed.slice(0, 1500) + '\n// ... (truncated)' : trimmed;
+    return trimmed.length > 1500 ? trimmed.slice(0, 1500) + '\n// … (truncated)' : trimmed;
+  }
+
+  indentPx(depth: number): number {
+    return depth * 20;
   }
 }

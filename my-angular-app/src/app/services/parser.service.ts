@@ -522,49 +522,52 @@ export class ParserService {
     const n = components.length;
     if (n === 0) return;
 
-    // Large world space — the overview uses pan/zoom to navigate it
-    const W = 5000;
-    const H = 4000;
-    const PAD = 350;
+    // Card size mirrors OverviewComponent.getCardDimensions() (BASE_W=200, BASE_H=110, MAX_SCALE=1.75)
+    const cardW = (c: ComponentNode) => Math.round(200 * (1 + (Math.min(c.usedBy.length, 6) / 6) * 0.75));
+    const cardH = (c: ComponentNode) => Math.round(110 * (1 + (Math.min(c.usedBy.length, 6) / 6) * 0.75));
 
-    // Scale initial circle radius with component count for better spread
-    const baseRadius = Math.min(W, H) * 0.38;
-    const dynamicRadius = Math.max(baseRadius, n * 70);
+    const W = 5000, H = 4000, PAD = 350;
 
-    // Initial positions: circle, jittered slightly to break symmetry
+    // Initial positions: evenly spaced circle, radius scales with n
+    const dynamicRadius = Math.max(Math.min(W, H) * 0.38, n * 80);
     for (let i = 0; i < n; i++) {
       const angle = (i / n) * Math.PI * 2;
       components[i].x = W / 2 + Math.cos(angle) * dynamicRadius + (Math.random() - 0.5) * 40;
       components[i].y = H / 2 + Math.sin(angle) * dynamicRadius + (Math.random() - 0.5) * 40;
     }
 
-    // Run force iterations
     const fx = new Float64Array(n);
     const fy = new Float64Array(n);
 
     for (let iter = 0; iter < 350; iter++) {
-      fx.fill(0);
-      fy.fill(0);
+      fx.fill(0); fy.fill(0);
 
-      // Repulsion — much stronger to push nodes far apart
+      // Size-aware repulsion: blow up strongly when cards would overlap
       for (let i = 0; i < n; i++) {
         for (let j = i + 1; j < n; j++) {
           const dx = components[j].x - components[i].x;
           const dy = components[j].y - components[i].y;
           const dist2 = dx * dx + dy * dy + 1;
           const dist = Math.sqrt(dist2);
-          // Extra kick when nodes are very close
-          const strength = Math.min(300000 / dist2, 5000);
-          const nx = dx / dist;
-          const ny = dy / dist;
-          fx[i] -= nx * strength;
-          fy[i] -= ny * strength;
-          fx[j] += nx * strength;
-          fy[j] += ny * strength;
+
+          // Minimum centre-to-centre distance that keeps the cards from overlapping
+          const minDist = (cardW(components[i]) + cardW(components[j])) / 2 + 60;
+
+          let strength: number;
+          if (dist < minDist) {
+            // Very strong push-apart when overlapping
+            strength = 2_000_000 / dist2;
+          } else {
+            strength = Math.min(300_000 / dist2, 3000);
+          }
+
+          const nx = dx / dist, ny = dy / dist;
+          fx[i] -= nx * strength; fy[i] -= ny * strength;
+          fx[j] += nx * strength; fy[j] += ny * strength;
         }
       }
 
-      // Attraction along edges — weak so connected nodes don't crowd together
+      // Weak edge attraction
       for (let i = 0; i < n; i++) {
         for (const usedId of components[i].usedComponents) {
           const j = components.findIndex(c => c.id === usedId);
@@ -572,28 +575,56 @@ export class ParserService {
           const dx = components[j].x - components[i].x;
           const dy = components[j].y - components[i].y;
           const dist = Math.sqrt(dx * dx + dy * dy) + 1;
-          const strength = dist * 0.0018;
-          const nx = dx / dist;
-          const ny = dy / dist;
-          fx[i] += nx * strength;
-          fy[i] += ny * strength;
-          fx[j] -= nx * strength;
-          fy[j] -= ny * strength;
+          const strength = dist * 0.0015;
+          const nx = dx / dist, ny = dy / dist;
+          fx[i] += nx * strength; fy[i] += ny * strength;
+          fx[j] -= nx * strength; fy[j] -= ny * strength;
         }
       }
 
-      // Apply with damping — cool down over iterations
-      const damp = 0.88 - iter * 0.0005;
+      // Apply with cooling schedule
+      const damp = Math.max(0.3, 0.88 - iter * 0.0015);
       for (let i = 0; i < n; i++) {
-        components[i].x = Math.max(
-          PAD,
-          Math.min(W - PAD, components[i].x + fx[i] * damp),
-        );
-        components[i].y = Math.max(
-          PAD,
-          Math.min(H - PAD, components[i].y + fy[i] * damp),
-        );
+        components[i].x = Math.max(PAD, Math.min(W - PAD, components[i].x + fx[i] * damp));
+        components[i].y = Math.max(PAD, Math.min(H - PAD, components[i].y + fy[i] * damp));
       }
+    }
+
+    // ── Post-simulation: AABB collision resolution ────────────────────────────
+    // Push apart any remaining overlapping pairs (accounts for non-circular card shapes).
+    const GAP = 30; // minimum pixel gap between card edges
+    for (let pass = 0; pass < 80; pass++) {
+      let anyOverlap = false;
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const wi = cardW(components[i]), hi = cardH(components[i]);
+          const wj = cardW(components[j]), hj = cardH(components[j]);
+          const reqX = (wi + wj) / 2 + GAP; // required centre-to-centre on X
+          const reqY = (hi + hj) / 2 + GAP; // required centre-to-centre on Y
+
+          const dx = components[j].x - components[i].x;
+          const dy = components[j].y - components[i].y;
+
+          if (Math.abs(dx) < reqX && Math.abs(dy) < reqY) {
+            anyOverlap = true;
+            // Resolve along whichever axis has the smaller overlap ratio
+            const overlapX = reqX - Math.abs(dx);
+            const overlapY = reqY - Math.abs(dy);
+            if (overlapX / reqX < overlapY / reqY) {
+              const push = overlapX / 2 + 1;
+              const sign = dx >= 0 ? 1 : -1;
+              components[i].x -= sign * push;
+              components[j].x += sign * push;
+            } else {
+              const push = overlapY / 2 + 1;
+              const sign = dy >= 0 ? 1 : -1;
+              components[i].y -= sign * push;
+              components[j].y += sign * push;
+            }
+          }
+        }
+      }
+      if (!anyOverlap) break;
     }
   }
 

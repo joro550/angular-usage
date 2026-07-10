@@ -63,12 +63,8 @@
 <div
   #container
   class="absolute left-0 right-0 bottom-0 overflow-hidden bg-base-100 select-none"
-  style="top: 52px"
-  [style.cursor]="(isPanning() || draggingId()) ? 'grabbing' : 'grab'"
+  style="top: 52px; cursor: grab"
   (pointerdown)="onBackgroundPointerDown($event)"
-  (pointermove)="onPointerMove($event)"
-  (pointerup)="onPointerUp($event)"
-  (pointercancel)="onPointerUp($event)"
 >
   <!-- Infinite grid — pattern offset tracks pan/zoom to appear seamless -->
   <svg class="absolute inset-0 w-full h-full pointer-events-none" style="opacity: 0.04; z-index: 0">
@@ -87,12 +83,12 @@
 
   <!-- World space — cards + edges transformed together -->
   <div
-    class="absolute top-0 left-0 origin-top-left"
-    style="width: 8000px; height: 6000px; z-index: 1"
+    class="world-div absolute top-0 left-0 origin-top-left"
+    style="width: 8000px; height: 6000px; z-index: 1; will-change: transform; contain: layout style"
     [style.transform]="transform()"
   >
     <!-- SVG connection lines -->
-    <svg class="absolute top-0 left-0 overflow-visible pointer-events-none"
+    <svg class="edge-svg absolute top-0 left-0 overflow-visible pointer-events-none"
          style="width: 8000px; height: 6000px">
       <defs>
         <marker id="arrowhead" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
@@ -100,9 +96,15 @@
         </marker>
       </defs>
       @for (edge of edges(); track edge.id) {
-        <path [attr.d]="edge.path" fill="none" stroke="rgb(139,92,246)"
-              [attr.stroke-opacity]="edge.opacity" stroke-width="1.5"
-              marker-end="url(#arrowhead)"/>
+        <path
+          [attr.d]="edge.path"
+          [attr.data-from]="edge.fromId"
+          [attr.data-to]="edge.toId"
+          fill="none" stroke="rgb(139,92,246)"
+          [attr.stroke-opacity]="edge.opacity"
+          stroke-width="1.5"
+          marker-end="url(#arrowhead)"
+        />
       }
     </svg>
 
@@ -115,6 +117,7 @@
 
       <div
         class="absolute"
+        [attr.data-comp-id]="comp.id"
         [style.left.px]="pos.x"
         [style.top.px]="pos.y"
         [style.width.px]="dim.w"

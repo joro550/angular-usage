@@ -53,6 +53,17 @@ export class StateService {
     this.viewMode.set('component');
   }
 
+  // Simulation values — persists across component→function navigation
+  readonly simulationValues = signal<Record<string, string>>({});
+
+  setSimValue(name: string, value: string): void {
+    this.simulationValues.update(v => ({ ...v, [name]: value }));
+  }
+
+  clearSimValues(): void {
+    this.simulationValues.set({});
+  }
+
   resetToUpload(): void {
     this.project.set(null);
     this.selectedComponentId.set(null);
