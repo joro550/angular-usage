@@ -1,0 +1,224 @@
+<!-- ═══════════════════════════ Navbar / top bar ═══════════════════════════ -->
+<div class="navbar absolute top-0 left-0 right-0 z-20 bg-base-100/90 backdrop-blur-md
+            border-b border-base-300/60 min-h-[52px] px-4 gap-2">
+
+  <!-- Brand + stats -->
+  <div class="navbar-start gap-2 flex-none">
+    <svg width="22" height="22" viewBox="0 0 40 40" fill="none">
+      <rect width="40" height="40" rx="10" fill="url(#logo-g)" />
+      <path d="M10 28 L20 12 L30 28" stroke="white" stroke-width="2.5" stroke-linejoin="round" fill="none"/>
+      <path d="M14 23 L26 23" stroke="white" stroke-width="2" stroke-linecap="round"/>
+      <defs>
+        <linearGradient id="logo-g" x1="0" y1="0" x2="40" y2="40">
+          <stop offset="0%" stop-color="#6366f1"/>
+          <stop offset="100%" stop-color="#8b5cf6"/>
+        </linearGradient>
+      </defs>
+    </svg>
+    <span class="font-semibold text-sm hidden sm:block">Angular Analyzer</span>
+    <div class="badge badge-neutral text-xs">{{ project()!.components.length }} components</div>
+    <div class="badge badge-neutral text-xs">{{ totalEdges() }} relationships</div>
+  </div>
+
+  <!-- Search -->
+  <div class="navbar-center">
+    <label class="input input-sm input-bordered flex items-center gap-2 w-52">
+      <svg class="w-3.5 h-3.5 opacity-40 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+      </svg>
+      <input
+        type="text"
+        class="grow"
+        placeholder="Search components…"
+        [value]="searchQuery()"
+        (input)="onSearchInput($event)"
+      />
+      @if (hasSearch()) {
+        <button class="btn btn-ghost btn-xs btn-circle" (click)="clearSearch()" title="Clear">✕</button>
+      }
+    </label>
+    @if (hasSearch()) {
+      <div class="absolute top-full mt-1 left-1/2 -translate-x-1/2">
+        @if (searchResultCount() > 0) {
+          <div class="badge badge-success badge-sm">{{ searchResultCount() }} found</div>
+        } @else {
+          <div class="badge badge-error badge-sm">No matches</div>
+        }
+      </div>
+    }
+  </div>
+
+  <!-- Actions -->
+  <div class="navbar-end gap-2">
+    <span class="text-xs text-base-content/25 hidden xl:block">
+      Scroll to zoom · drag canvas to pan · click card to inspect
+    </span>
+    <button class="btn btn-sm btn-neutral" (click)="resetLayout()">Reset layout</button>
+    <button class="btn btn-sm btn-neutral" (click)="state.resetToUpload()">Load new</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ Graph viewport ══════════════════════════════ -->
+<div
+  #container
+  class="absolute left-0 right-0 bottom-0 overflow-hidden bg-base-100 select-none"
+  style="top: 52px"
+  [style.cursor]="(isPanning() || draggingId()) ? 'grabbing' : 'grab'"
+  (pointerdown)="onBackgroundPointerDown($event)"
+  (pointermove)="onPointerMove($event)"
+  (pointerup)="onPointerUp($event)"
+  (pointercancel)="onPointerUp($event)"
+>
+  <!-- Infinite grid — pattern offset tracks pan/zoom to appear seamless -->
+  <svg class="absolute inset-0 w-full h-full pointer-events-none" style="opacity: 0.04; z-index: 0">
+    <defs>
+      <pattern
+        id="infinite-grid"
+        [attr.x]="gridX()" [attr.y]="gridY()"
+        [attr.width]="gridSize()" [attr.height]="gridSize()"
+        patternUnits="userSpaceOnUse"
+      >
+        <path [attr.d]="gridPath()" fill="none" stroke="currentColor" stroke-width="0.5"/>
+      </pattern>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#infinite-grid)"/>
+  </svg>
+
+  <!-- World space — cards + edges transformed together -->
+  <div
+    class="absolute top-0 left-0 origin-top-left"
+    style="width: 8000px; height: 6000px; z-index: 1"
+    [style.transform]="transform()"
+  >
+    <!-- SVG connection lines -->
+    <svg class="absolute top-0 left-0 overflow-visible pointer-events-none"
+         style="width: 8000px; height: 6000px">
+      <defs>
+        <marker id="arrowhead" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+          <polygon points="0 0, 9 3.5, 0 7" fill="rgba(139,92,246,0.6)"/>
+        </marker>
+      </defs>
+      @for (edge of edges(); track edge.id) {
+        <path [attr.d]="edge.path" fill="none" stroke="rgb(139,92,246)"
+              [attr.stroke-opacity]="edge.opacity" stroke-width="1.5"
+              marker-end="url(#arrowhead)"/>
+      }
+    </svg>
+
+    <!-- Component cards -->
+    @for (comp of project()!.components; track comp.id) {
+      @let pos = positions()[comp.id] ?? { x: comp.x, y: comp.y };
+      @let dim = getCardDimensions(comp);
+      @let isActive = draggingId() === comp.id;
+      @let isMatch = isSearchMatch(comp);
+
+      <div
+        class="absolute"
+        [style.left.px]="pos.x"
+        [style.top.px]="pos.y"
+        [style.width.px]="dim.w"
+        [style.height.px]="dim.h"
+        [style.z-index]="isActive ? 100 : 2"
+        [style.opacity]="isMatch ? 1 : 0.1"
+        [style.transition]="'opacity 0.15s ease'"
+        [style.filter]="isActive
+          ? 'drop-shadow(0 0 24px rgba(139,92,246,0.7))'
+          : (isMatch && hasSearch()) ? 'drop-shadow(0 0 14px rgba(99,102,241,0.6))' : 'none'"
+        (pointerdown)="startDrag($event, comp.id)"
+      >
+        <!-- Card shell — keeps dynamic borders, stays custom-positioned -->
+        <div
+          class="w-full h-full rounded-xl border overflow-visible
+                 transition-colors duration-150"
+          [style.border-color]="getCardBorderColor(comp)"
+          style="background: rgba(13,13,26,0.95)"
+        >
+          <!-- Gradient accent bar -->
+          <div class="absolute top-0 left-0 right-0 rounded-t-xl"
+               style="height: 2px; opacity: 0.9"
+               [style.background]="getCardAccent(comp)"></div>
+
+          <!-- Usage badge -->
+          @if (comp.usedBy.length > 0) {
+            <div class="badge badge-sm absolute rounded-full font-bold shadow-lg"
+                 style="top:-10px; right:-10px; z-index:3;
+                        background: oklch(0.558 0.268 303); color: white; border: none">
+              ×{{ comp.usedBy.length }}
+            </div>
+          }
+
+          <!-- Content -->
+          <div class="p-3 h-full flex flex-col gap-1 overflow-hidden">
+            <div class="font-mono font-bold text-base-content leading-tight truncate"
+                 [style.font-size.px]="dim.fontSize">
+              {{ comp.name }}
+            </div>
+            <div class="font-mono truncate text-primary/80" style="font-size: 10px">
+              {{ comp.selector }}
+            </div>
+            <div class="mt-auto flex gap-3 text-base-content/30" style="font-size: 10px">
+              <span class="text-base-content/40">{{ comp.methods.length }} methods</span>
+              <span>{{ comp.properties.length }} props</span>
+              @if (comp.usedComponents.length > 0) {
+                <span class="text-primary/60">→ {{ comp.usedComponents.length }}</span>
+              }
+            </div>
+          </div>
+        </div>
+      </div>
+    }
+  </div>
+
+  <!-- ── HUD: zoom controls (bottom-right) ── -->
+  <div class="absolute bottom-5 right-5 z-10 card bg-base-200 border border-base-300 shadow-xl">
+    <div class="card-body p-2 gap-1 items-center">
+      <button class="btn btn-xs btn-square btn-ghost"
+              [disabled]="zoom() >= MAX_ZOOM"
+              (click)="zoomIn()" title="Zoom in">
+        <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+        </svg>
+      </button>
+
+      <div class="font-mono text-base-content/40 text-center" style="font-size: 10px; min-width: 36px">
+        {{ zoomPercent() }}%
+      </div>
+
+      <button class="btn btn-xs btn-square btn-ghost"
+              [disabled]="zoom() <= MIN_ZOOM"
+              (click)="zoomOut()" title="Zoom out">
+        <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M3 10a.75.75 0 01.75-.75h12.5a.75.75 0 010 1.5H3.75A.75.75 0 013 10z" clip-rule="evenodd"/>
+        </svg>
+      </button>
+
+      <div class="divider my-0 w-full"></div>
+
+      <button class="btn btn-xs btn-square btn-ghost" (click)="fitToScreen()" title="Fit to screen">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- ── HUD: legend (bottom-left) ── -->
+  <div class="absolute bottom-5 left-5 z-10 card bg-base-200 border border-base-300 shadow-xl">
+    <div class="card-body p-3 gap-1.5 text-base-content/40" style="font-size: 10px">
+      <div class="flex items-center gap-2">
+        <div style="width:16px; height:2px; background: rgb(139,92,246)"></div>
+        <span>uses component</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <div style="width:12px; height:12px; border-radius:50%; border:2px solid oklch(0.558 0.268 303)"></div>
+        <span>×N = used N times</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <div style="width:12px; height:8px; border-radius:2px; background:rgba(99,102,241,0.35)"></div>
+        <span>larger card = more uses</span>
+      </div>
+    </div>
+  </div>
+</div>

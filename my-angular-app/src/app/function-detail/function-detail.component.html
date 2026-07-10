@@ -1,0 +1,170 @@
+<div class="h-full flex flex-col bg-base-100 overflow-hidden">
+
+  <!-- Breadcrumb navbar -->
+  <div class="navbar bg-base-100/80 border-b border-base-300 min-h-[52px] px-4">
+    <div class="flex-1 flex items-center gap-2 flex-wrap text-sm min-w-0">
+      <button class="btn btn-ghost btn-sm gap-1.5" (click)="state.backToOverview()">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+        </svg>
+        Overview
+      </button>
+      <span class="text-base-content/20">/</span>
+      <button class="btn btn-ghost btn-sm font-mono" (click)="state.backToComponent()">
+        {{ comp()?.name }}
+      </button>
+      <span class="text-base-content/20">/</span>
+      <span class="font-mono font-semibold">{{ method().name }}</span>
+      @if (method().isAsync) {
+        <div class="badge badge-info badge-sm font-mono">async</div>
+      }
+      @if (method().isLifecycle) {
+        <div class="badge badge-warning badge-sm font-mono">lifecycle</div>
+      }
+    </div>
+  </div>
+
+  <div class="flex-1 overflow-auto px-6 py-6 space-y-8">
+
+    <!-- Hero function card -->
+    <div class="flex justify-center">
+      <div class="card border-2 border-primary w-full max-w-xl shadow-[0_0_40px_rgba(99,102,241,0.15)]"
+           style="background: rgba(99,102,241,0.05)">
+        <div class="card-body px-8 py-6 gap-4">
+          <div class="flex items-start gap-3">
+            <div class="text-primary mt-0.5">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                  d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/>
+              </svg>
+            </div>
+            <div>
+              <h2 class="card-title font-mono text-xl">{{ method().name }}</h2>
+              @if (method().params) {
+                <p class="font-mono text-sm text-base-content/40 mt-1">
+                  (<span class="text-base-content/60">{{ method().params }}</span>)
+                </p>
+              }
+            </div>
+          </div>
+          <div class="flex flex-wrap gap-4 text-xs text-base-content/40 border-t border-base-300/60 pt-3">
+            <span>
+              <span class="font-semibold text-base-content/70">{{ calledMethodCards().length }}</span>
+              method{{ calledMethodCards().length !== 1 ? 's' : '' }} called
+            </span>
+            <span>
+              <span class="font-semibold text-base-content/70">{{ propChips().length }}</span>
+              propert{{ propChips().length !== 1 ? 'ies' : 'y' }} touched
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Called methods -->
+    @if (calledMethodCards().length > 0) {
+      <section>
+        <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-4">
+          <svg class="w-3 h-3 text-primary" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd"
+              d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.25a.75.75 0 010 1.08l-5.5 5.25a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z"
+              clip-rule="evenodd"/>
+          </svg>
+          CALLS THESE METHODS
+        </div>
+
+        <div class="flex flex-wrap gap-4">
+          @for (card of calledMethodCards(); track card.method.id) {
+            <button
+              class="card card-compact bg-base-200 border border-base-300 text-left
+                     hover:border-primary hover:bg-primary/5 hover:shadow-lg
+                     transition-all duration-150 cursor-pointer group"
+              style="min-width: 200px"
+              (click)="navigateToMethod(card.method)"
+            >
+              <div class="absolute top-0 left-0 right-0 h-0.5 rounded-t-xl"
+                   [style.background]="getMethodAccent(card.method)"></div>
+              <div class="card-body px-4 py-3 gap-1.5">
+                <div class="flex gap-1">
+                  @if (card.method.isAsync) {
+                    <div class="badge badge-info badge-xs">async</div>
+                  }
+                  @if (card.method.isLifecycle) {
+                    <div class="badge badge-warning badge-xs">lifecycle</div>
+                  }
+                </div>
+                <p class="font-mono text-sm font-semibold group-hover:text-primary transition-colors">
+                  {{ card.method.name }}
+                </p>
+                @if (card.method.params) {
+                  <p class="text-[10px] text-base-content/30 font-mono">({{ card.method.params }})</p>
+                }
+                @if (card.method.touchedProperties.length > 0) {
+                  <div class="flex flex-wrap gap-1 mt-1">
+                    @for (p of card.method.touchedProperties.slice(0, 3); track p) {
+                      <span class="badge badge-ghost badge-xs font-mono">{{ p }}</span>
+                    }
+                    @if (card.method.touchedProperties.length > 3) {
+                      <span class="text-[9px] text-base-content/30">
+                        +{{ card.method.touchedProperties.length - 3 }}
+                      </span>
+                    }
+                  </div>
+                }
+              </div>
+            </button>
+          }
+        </div>
+      </section>
+    }
+
+    <!-- Touched properties -->
+    @if (propChips().length > 0) {
+      <section>
+        <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-4">
+          CLASS PROPERTIES TOUCHED
+        </div>
+        <div class="flex flex-wrap gap-3">
+          @for (chip of propChips(); track chip.prop.name) {
+            <div class="card card-compact bg-base-200 border border-base-300">
+              <div class="card-body p-0">
+                <div class="flex items-center gap-2 px-3 py-2">
+                  <div class="w-2 h-2 rounded-full flex-none" [style.background]="chip.text"></div>
+                  <span class="font-mono text-sm font-semibold">{{ chip.prop.name }}</span>
+                  <span class="badge badge-xs font-mono border-0"
+                        [style.background]="chip.bg"
+                        [style.color]="chip.text">
+                    {{ chip.kind }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          }
+        </div>
+      </section>
+    }
+
+    <!-- Empty state -->
+    @if (calledMethodCards().length === 0 && propChips().length === 0) {
+      <div class="flex flex-col items-center justify-center py-16 text-base-content/25">
+        <svg class="w-12 h-12 mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
+            d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/>
+        </svg>
+        <p class="text-sm">This method doesn't call other class methods</p>
+        <p class="text-xs mt-1 opacity-60">and doesn't interact with class properties</p>
+      </div>
+    }
+
+    <!-- Method body preview -->
+    <section>
+      <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-3">
+        METHOD BODY
+      </div>
+      <div class="mockup-code max-h-64 overflow-auto text-xs leading-relaxed">
+        <pre class="px-5 py-3 whitespace-pre-wrap break-all"><code>{{ getFormattedBody() }}</code></pre>
+      </div>
+    </section>
+
+  </div>
+</div>

@@ -1,0 +1,186 @@
+<div class="h-full flex flex-col bg-base-100 overflow-hidden">
+
+  <!-- Breadcrumb navbar -->
+  <div class="navbar bg-base-100/80 border-b border-base-300 min-h-[52px] px-4">
+    <div class="flex-1 flex items-center gap-2 min-w-0">
+      <button class="btn btn-ghost btn-sm gap-1.5" (click)="state.backToOverview()">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+        </svg>
+        Overview
+      </button>
+      <span class="text-base-content/20">/</span>
+      <span class="font-mono font-semibold text-sm">{{ comp().name }}</span>
+    </div>
+    <div class="flex-none">
+      <span class="text-[10px] text-base-content/25 font-mono truncate max-w-xs hidden md:block">
+        {{ comp().filePath }}
+      </span>
+    </div>
+  </div>
+
+  <div class="flex-1 overflow-auto">
+
+    <!-- ── Component Relationships ── -->
+    <section class="px-6 py-5 border-b border-base-300/70">
+      <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-4">
+        COMPONENT RELATIONSHIPS
+      </div>
+
+      <div class="flex items-start gap-6 flex-wrap lg:flex-nowrap">
+
+        <!-- Used By -->
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-2 text-xs text-base-content/40">
+            <span>Used by</span>
+            <div class="badge badge-neutral badge-xs">{{ usedByComponents().length }}</div>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            @for (parent of usedByComponents(); track parent.id) {
+              <button class="btn btn-xs btn-outline font-mono" (click)="state.selectComponent(parent)">
+                {{ parent.name }}
+              </button>
+            }
+            @empty {
+              <span class="text-xs italic text-base-content/25">Not used by any component</span>
+            }
+          </div>
+        </div>
+
+        <!-- This component (focal point) -->
+        <div class="flex-none">
+          <div class="card card-compact bg-primary/10 border-2 border-primary text-center shadow-lg shadow-primary/10">
+            <div class="card-body px-5 py-3 gap-0.5">
+              <p class="font-mono font-bold text-base-content text-sm">{{ comp().name }}</p>
+              <p class="text-[10px] text-primary font-mono">{{ comp().selector }}</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Uses -->
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-2 text-xs text-base-content/40">
+            <span>Uses</span>
+            <div class="badge badge-neutral badge-xs">{{ usesComponents().length }}</div>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            @for (child of usesComponents(); track child.id) {
+              <button class="btn btn-xs btn-outline btn-secondary font-mono" (click)="state.selectComponent(child)">
+                {{ child.name }}
+              </button>
+            }
+            @empty {
+              <span class="text-xs italic text-base-content/25">No child components</span>
+            }
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── Class Properties ── -->
+    <section class="px-6 py-5 border-b border-base-300/70">
+      <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-3">
+        CLASS PROPERTIES
+      </div>
+      <div class="flex flex-wrap gap-2">
+        @for (prop of comp().properties; track prop.name) {
+          @let colors = propColors(prop.kind);
+          <span
+            class="badge gap-1.5 font-mono border-0"
+            [style.background]="colors.bg"
+            [style.color]="colors.text"
+          >
+            <span class="font-semibold">{{ prop.name }}</span>
+            <span class="opacity-55 text-[10px]">{{ colors.label }}</span>
+          </span>
+        }
+        @empty {
+          <span class="text-xs italic text-base-content/25">No properties detected</span>
+        }
+      </div>
+    </section>
+
+    <!-- ── Method Call Graph ── -->
+    <section class="px-6 py-5">
+      <div class="flex items-center justify-between mb-4">
+        <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-0 flex-1">
+          METHOD CALL GRAPH
+        </div>
+        <span class="text-xs text-base-content/25 ml-3">Click a method to inspect it</span>
+      </div>
+
+      @if (comp().methods.length === 0) {
+        <p class="text-xs italic text-base-content/25">No methods detected</p>
+      } @else {
+        @let layout = methodLayout();
+        <div class="relative" [style.height.px]="layout.height + 40" style="min-height: 200px">
+
+          <!-- SVG edges -->
+          <svg class="absolute inset-0 w-full pointer-events-none overflow-visible"
+               [attr.height]="layout.height + 40">
+            <defs>
+              <marker id="method-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <polygon points="0 0, 8 3, 0 6" fill="rgba(99,102,241,0.7)"/>
+              </marker>
+            </defs>
+            @for (edge of layout.edges; track edge.id) {
+              <path [attr.d]="edge.path" fill="none" stroke="rgba(99,102,241,0.45)"
+                    stroke-width="1.5" marker-end="url(#method-arrow)"/>
+            }
+          </svg>
+
+          <!-- Method node cards -->
+          @for (node of layout.nodes; track node.method.id) {
+            <div
+              class="absolute card card-compact cursor-pointer transition-all duration-150 group
+                     hover:shadow-[0_0_14px_rgba(99,102,241,0.3)] bg-base-200 border border-base-300
+                     hover:border-primary"
+              [style.left.px]="node.x"
+              [style.top.px]="node.y"
+              [style.width.px]="CARD_W"
+              (click)="state.selectMethod(node.method)"
+            >
+              <!-- Accent bar -->
+              <div class="absolute top-0 left-0 right-0 h-0.5 rounded-t-xl"
+                   [style.background]="getMethodAccent(node.method)"></div>
+
+              <div class="card-body px-3 py-2 gap-1">
+                <div class="flex gap-1">
+                  @if (node.method.isAsync) {
+                    <div class="badge badge-info badge-xs font-mono">async</div>
+                  }
+                  @if (node.method.isLifecycle) {
+                    <div class="badge badge-warning badge-xs font-mono">lifecycle</div>
+                  }
+                </div>
+                <p class="font-mono text-xs font-semibold truncate
+                           group-hover:text-primary transition-colors">
+                  {{ node.method.name }}
+                </p>
+                @if (node.method.params) {
+                  <p class="text-[10px] text-base-content/30 font-mono truncate">
+                    ({{ node.method.params }})
+                  </p>
+                }
+                @if (node.method.touchedProperties.length > 0) {
+                  <div class="flex flex-wrap gap-1 mt-1">
+                    @for (prop of node.method.touchedProperties.slice(0, 4); track prop) {
+                      <span class="badge badge-ghost badge-xs font-mono">{{ prop }}</span>
+                    }
+                    @if (node.method.touchedProperties.length > 4) {
+                      <span class="text-[9px] text-base-content/30">
+                        +{{ node.method.touchedProperties.length - 4 }}
+                      </span>
+                    }
+                  </div>
+                }
+              </div>
+            </div>
+          }
+        </div>
+      }
+    </section>
+
+  </div>
+</div>

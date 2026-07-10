@@ -1,0 +1,106 @@
+<div class="hero min-h-screen bg-base-100">
+  <div class="hero-content flex-col gap-10 w-full max-w-2xl py-16">
+
+    <!-- Logo / title -->
+    <div class="text-center">
+      <div class="flex items-center justify-center gap-3 mb-3">
+        <svg width="44" height="44" viewBox="0 0 40 40" fill="none">
+          <rect width="40" height="40" rx="10" fill="url(#grad-u)" />
+          <path d="M10 28 L20 12 L30 28" stroke="white" stroke-width="2.5" stroke-linejoin="round" fill="none"/>
+          <path d="M14 23 L26 23" stroke="white" stroke-width="2" stroke-linecap="round"/>
+          <defs>
+            <linearGradient id="grad-u" x1="0" y1="0" x2="40" y2="40">
+              <stop offset="0%" stop-color="#6366f1"/>
+              <stop offset="100%" stop-color="#8b5cf6"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <h1 class="text-3xl font-bold tracking-tight">Angular Analyzer</h1>
+      </div>
+      <p class="text-base-content/50 text-sm">
+        Upload a zipped Angular project to visualize its component architecture
+      </p>
+    </div>
+
+    <!-- Drop zone -->
+    <div
+      class="card w-full border-2 border-dashed transition-all duration-200 cursor-pointer"
+      [class.border-primary]="isDraggingOver()"
+      [class.bg-primary/5]="isDraggingOver()"
+      [class.border-base-300]="!isDraggingOver()"
+      [class.bg-base-200]="!isDraggingOver()"
+      (dragover)="onDragOver($event)"
+      (dragleave)="onDragLeave()"
+      (drop)="onDrop($event)"
+      (click)="fileInput.click()"
+    >
+      <input #fileInput type="file" accept=".zip" class="hidden" (change)="onFileSelected($event)" />
+
+      <div class="card-body items-center text-center py-16 gap-3">
+
+        @if (state() === 'idle') {
+          <div class="w-16 h-16 rounded-full bg-base-300 flex items-center justify-center">
+            <svg class="w-8 h-8 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+            </svg>
+          </div>
+          <div>
+            <p class="font-semibold text-base-content">Drop your Angular project ZIP here</p>
+            <p class="text-base-content/40 text-sm mt-1">or click to browse</p>
+          </div>
+          <div class="flex flex-wrap justify-center gap-2 mt-2">
+            <div class="badge badge-outline badge-success gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-success inline-block"></span>
+              *.component.ts
+            </div>
+            <div class="badge badge-outline badge-info gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-info inline-block"></span>
+              *.html templates
+            </div>
+            <div class="badge badge-outline badge-secondary gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-secondary inline-block"></span>
+              signals &amp; methods
+            </div>
+          </div>
+        }
+
+        @if (state() === 'parsing') {
+          <div class="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center">
+            <span class="loading loading-spinner loading-md text-primary"></span>
+          </div>
+          <div>
+            <p class="font-semibold text-primary">Parsing project…</p>
+            <p class="text-base-content/40 text-sm mt-1">Analysing components, methods &amp; properties</p>
+          </div>
+        }
+
+        @if (state() === 'error') {
+          <div role="alert" class="alert alert-error max-w-sm">
+            <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+            </svg>
+            <span>{{ errorMessage() }}</span>
+          </div>
+          <p class="text-base-content/40 text-sm">Please try another file</p>
+        }
+
+      </div>
+    </div>
+
+    <!-- Feature cards -->
+    <div class="grid grid-cols-3 gap-4 w-full">
+      @for (feature of features; track feature.title) {
+        <div class="card card-compact bg-base-200 border border-base-300">
+          <div class="card-body">
+            <div class="text-xl">{{ feature.icon }}</div>
+            <h3 class="card-title text-sm">{{ feature.title }}</h3>
+            <p class="text-base-content/40 text-xs">{{ feature.desc }}</p>
+          </div>
+        </div>
+      }
+    </div>
+
+  </div>
+</div>

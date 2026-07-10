@@ -522,34 +522,39 @@ export class ParserService {
     const n = components.length;
     if (n === 0) return;
 
-    const W = 1400;
-    const H = 850;
-    const PAD = 120;
+    // Large world space — the overview uses pan/zoom to navigate it
+    const W = 5000;
+    const H = 4000;
+    const PAD = 350;
 
-    // Initial positions: circle
+    // Scale initial circle radius with component count for better spread
+    const baseRadius = Math.min(W, H) * 0.38;
+    const dynamicRadius = Math.max(baseRadius, n * 70);
+
+    // Initial positions: circle, jittered slightly to break symmetry
     for (let i = 0; i < n; i++) {
       const angle = (i / n) * Math.PI * 2;
-      const r = Math.min(W, H) * 0.32;
-      components[i].x = W / 2 + Math.cos(angle) * r;
-      components[i].y = H / 2 + Math.sin(angle) * r;
+      components[i].x = W / 2 + Math.cos(angle) * dynamicRadius + (Math.random() - 0.5) * 40;
+      components[i].y = H / 2 + Math.sin(angle) * dynamicRadius + (Math.random() - 0.5) * 40;
     }
 
     // Run force iterations
     const fx = new Float64Array(n);
     const fy = new Float64Array(n);
 
-    for (let iter = 0; iter < 200; iter++) {
+    for (let iter = 0; iter < 350; iter++) {
       fx.fill(0);
       fy.fill(0);
 
-      // Repulsion
+      // Repulsion — much stronger to push nodes far apart
       for (let i = 0; i < n; i++) {
         for (let j = i + 1; j < n; j++) {
           const dx = components[j].x - components[i].x;
           const dy = components[j].y - components[i].y;
           const dist2 = dx * dx + dy * dy + 1;
           const dist = Math.sqrt(dist2);
-          const strength = Math.min(60000 / dist2, 800);
+          // Extra kick when nodes are very close
+          const strength = Math.min(300000 / dist2, 5000);
           const nx = dx / dist;
           const ny = dy / dist;
           fx[i] -= nx * strength;
@@ -559,7 +564,7 @@ export class ParserService {
         }
       }
 
-      // Attraction along edges
+      // Attraction along edges — weak so connected nodes don't crowd together
       for (let i = 0; i < n; i++) {
         for (const usedId of components[i].usedComponents) {
           const j = components.findIndex(c => c.id === usedId);
@@ -567,7 +572,7 @@ export class ParserService {
           const dx = components[j].x - components[i].x;
           const dy = components[j].y - components[i].y;
           const dist = Math.sqrt(dx * dx + dy * dy) + 1;
-          const strength = dist * 0.006;
+          const strength = dist * 0.0018;
           const nx = dx / dist;
           const ny = dy / dist;
           fx[i] += nx * strength;
@@ -577,8 +582,8 @@ export class ParserService {
         }
       }
 
-      // Apply with damping
-      const damp = 0.85;
+      // Apply with damping — cool down over iterations
+      const damp = 0.88 - iter * 0.0005;
       for (let i = 0; i < n; i++) {
         components[i].x = Math.max(
           PAD,
