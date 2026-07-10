@@ -157,6 +157,79 @@ export class FlowParserService {
 
   // ── Value input helpers ────────────────────────────────────────────────────
 
+  /**
+   * Walk the parsed tree and collect every `this.propName` that appears inside
+   * a branching expression: if/else-if condition, switch discriminant, loop guard,
+   * or a ternary operator's condition part (before the first `?`).
+   *
+   * These are the properties whose values directly determine which code path runs.
+   */
+  extractConditionProps(nodes: FlowNode[]): Set<string> {
+    const out = new Set<string>();
+    this.gatherConditionProps(nodes, out);
+    return out;
+  }
+
+  private gatherConditionProps(nodes: FlowNode[], out: Set<string>): void {
+    for (const node of nodes) {
+      switch (node.nodeKind) {
+        case 'if':
+          for (const branch of node.branches ?? []) {
+            // The condition itself
+            if (branch.condition) this.propsInExpr(branch.condition, out);
+            // Recurse into the branch body (nested ifs etc.)
+            this.gatherConditionProps(branch.body, out);
+          }
+          break;
+
+        case 'switch':
+          // The discriminant expression (e.g. this.mode())
+          if (node.switchExpr) this.propsInExpr(node.switchExpr, out);
+          for (const c of node.cases ?? []) this.gatherConditionProps(c.body, out);
+          break;
+
+        case 'loop':
+          // Loop guard/header (e.g. while (this.running))
+          if (node.loopHeader) this.propsInExpr(node.loopHeader, out);
+          this.gatherConditionProps(node.loopBody ?? [], out);
+          break;
+
+        case 'code':
+        case 'return':
+        case 'throw': {
+          // Detect ternary conditions: extract the part before the first standalone `?`
+          const text = node.text ?? '';
+          const qi = this.findTernaryQuestion(text);
+          if (qi >= 0) this.propsInExpr(text.slice(0, qi), out);
+          break;
+        }
+      }
+    }
+  }
+
+  /** Find the index of a top-level `?` in a string (skips nested parens/strings). */
+  private findTernaryQuestion(src: string): number {
+    let depth = 0;
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i];
+      if (c === '(' || c === '[') { depth++; continue; }
+      if (c === ')' || c === ']') { depth--; continue; }
+      if ((c === '"' || c === "'" || c === '`') && depth === 0) {
+        i = this.skipStr(src, i) - 1;
+        continue;
+      }
+      if (c === '?' && depth === 0 && src[i + 1] !== '?' && src[i - 1] !== '?') return i;
+    }
+    return -1;
+  }
+
+  /** Extract all `this.propName` identifiers from an expression string. */
+  private propsInExpr(expr: string, out: Set<string>): void {
+    const pat = /\bthis\.(\w+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = pat.exec(expr)) !== null) out.add(m[1]);
+  }
+
   parseValue(raw: string): unknown {
     const t = raw.trim();
     if (t === '' || t === 'undefined') return undefined;

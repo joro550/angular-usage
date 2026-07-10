@@ -54,25 +54,80 @@
             Enter property values — they persist when you navigate into a method's Flow tab
           </p>
 
-          <div class="flex flex-wrap gap-2">
-            @for (prop of comp().properties; track prop.name) {
-              @let colors = propColors(prop.kind);
-              <div class="flex items-center gap-1.5 bg-base-200 rounded-lg border border-base-300 px-2 py-1.5">
-                <div class="w-1.5 h-1.5 rounded-full flex-none" [style.background]="colors.text"></div>
-                <span class="font-mono text-xs font-semibold text-base-content/70">{{ prop.name }}</span>
-                <span class="text-[9px] text-base-content/30 font-mono">{{ colors.label }}</span>
-                <input
-                  type="text"
-                  class="input input-xs input-bordered font-mono w-28 ml-1"
-                  [placeholder]="isReadOnly(prop) ? '(read-only)' : 'value…'"
-                  [disabled]="isReadOnly(prop)"
-                  [value]="simValues()[prop.name] ?? ''"
-                  (input)="onSimInput(prop.name, $event)"
-                />
+          <!-- Branch-controlling properties (appear in if/switch/loop conditions) -->
+          @if (conditionPropNames().size > 0) {
+            <div class="mb-1">
+              <div class="flex items-center gap-1.5 text-[10px] font-semibold text-warning/70
+                          uppercase tracking-widest mb-2">
+                <svg class="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 1.5l6.5 6.5-6.5 6.5L1.5 8z"/>
+                </svg>
+                Affects branching
+                <span class="font-normal normal-case text-warning/40 ml-1">
+                  — changing these changes which code path runs
+                </span>
               </div>
-            }
-          </div>
-          <p class="text-[10px] text-base-content/25 mt-2">
+              <div class="flex flex-wrap gap-2">
+                @for (prop of comp().properties; track prop.name) {
+                  @if (conditionPropNames().has(prop.name)) {
+                    @let colors = propColors(prop.kind);
+                    <div class="flex items-center gap-1.5 rounded-lg border px-2 py-1.5"
+                         style="border-color:rgba(245,158,11,0.4); background:rgba(245,158,11,0.04)">
+                      <svg class="w-2 h-2 flex-none" viewBox="0 0 16 16" fill="rgba(245,158,11,0.8)">
+                        <path d="M8 1.5l6.5 6.5-6.5 6.5L1.5 8z"/>
+                      </svg>
+                      <div class="w-1.5 h-1.5 rounded-full flex-none" [style.background]="colors.text"></div>
+                      <span class="font-mono text-xs font-semibold text-base-content/80">{{ prop.name }}</span>
+                      <span class="text-[9px] text-base-content/40 font-mono">{{ colors.label }}</span>
+                      <input
+                        type="text"
+                        class="input input-xs input-bordered font-mono w-24 ml-1"
+                        [placeholder]="isReadOnly(prop) ? '(read-only)' : 'value…'"
+                        [disabled]="isReadOnly(prop)"
+                        [value]="simValues()[prop.name] ?? ''"
+                        (input)="onSimInput(prop.name, $event)"
+                      />
+                    </div>
+                  }
+                }
+              </div>
+            </div>
+          }
+
+          <!-- Other properties (not in conditions) -->
+          @if (conditionPropNames().size < comp().properties.length) {
+            <div [class.mt-3]="conditionPropNames().size > 0">
+              @if (conditionPropNames().size > 0) {
+                <div class="text-[10px] text-base-content/30 uppercase tracking-widest mb-2">
+                  Other properties
+                  <span class="font-normal normal-case">— not used in conditions</span>
+                </div>
+              }
+              <div class="flex flex-wrap gap-2">
+                @for (prop of comp().properties; track prop.name) {
+                  @if (!conditionPropNames().has(prop.name)) {
+                    @let colors = propColors(prop.kind);
+                    <div class="flex items-center gap-1.5 bg-base-200 rounded-lg border border-base-300
+                                px-2 py-1.5 opacity-70">
+                      <div class="w-1.5 h-1.5 rounded-full flex-none" [style.background]="colors.text"></div>
+                      <span class="font-mono text-xs font-semibold text-base-content/60">{{ prop.name }}</span>
+                      <span class="text-[9px] text-base-content/30 font-mono">{{ colors.label }}</span>
+                      <input
+                        type="text"
+                        class="input input-xs input-bordered font-mono w-24 ml-1"
+                        [placeholder]="isReadOnly(prop) ? '(read-only)' : 'value…'"
+                        [disabled]="isReadOnly(prop)"
+                        [value]="simValues()[prop.name] ?? ''"
+                        (input)="onSimInput(prop.name, $event)"
+                      />
+                    </div>
+                  }
+                }
+              </div>
+            </div>
+          }
+
+          <p class="text-[10px] text-base-content/25 mt-3">
             <span class="font-mono">true · false · 42 · "text" · null · [1,2] · &#123;"k":"v"&#125;</span>
           </p>
         </section>
@@ -213,7 +268,17 @@
                   @if (node.method.touchedProperties.length > 0) {
                     <div class="flex flex-wrap gap-1 mt-1">
                       @for (prop of node.method.touchedProperties.slice(0, 4); track prop) {
-                        <span class="badge badge-ghost badge-xs font-mono">{{ prop }}</span>
+                        @let isCond = isConditionPropFor(node.method.id, prop);
+                        <span
+                          class="badge badge-xs font-mono"
+                          [class.badge-ghost]="!isCond"
+                          [style.border-color]="isCond ? 'rgba(245,158,11,0.5)' : ''"
+                          [style.background]="isCond ? 'rgba(245,158,11,0.08)' : ''"
+                          [style.color]="isCond ? 'rgba(245,158,11,0.9)' : ''"
+                          [title]="isCond ? prop + ' appears in a branch condition' : prop"
+                        >
+                          {{ isCond ? '◆ ' : '' }}{{ prop }}
+                        </span>
                       }
                       @if (node.method.touchedProperties.length > 4) {
                         <span class="text-[9px] text-base-content/30">+{{ node.method.touchedProperties.length - 4 }}</span>

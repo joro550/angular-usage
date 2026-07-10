@@ -66,7 +66,43 @@ export class ComponentDetailComponent {
 
   readonly methodLayout = computed(() => this.computeMethodLayout(this.comp().methods));
 
-  // ── Simulation ─────────────────────────────────────────────────────────────
+  // ── Simulation ─────────────────────────────────────────────────────
+
+  /**
+   * For each method, the set of class property names that appear in its
+   * branching conditions (if/else-if/switch/loop guards). Pre-computed once
+   * when the component changes so the template doesn’t parse on every render.
+   */
+  readonly allMethodConditionProps = computed<Map<string, Set<string>>>(() => {
+    const comp = this.comp();
+    const propNames = new Set(comp.properties.map(p => p.name));
+    const map = new Map<string, Set<string>>();
+    for (const method of comp.methods) {
+      if (!method.body?.trim()) { map.set(method.id, new Set()); continue; }
+      try {
+        const nodes = this.flowParser.parse(method.body);
+        const raw = this.flowParser.extractConditionProps(nodes);
+        map.set(method.id, new Set([...raw].filter(n => propNames.has(n))));
+      } catch {
+        map.set(method.id, new Set());
+      }
+    }
+    return map;
+  });
+
+  /** Union of all condition properties across every method in this component. */
+  readonly conditionPropNames = computed<Set<string>>(() => {
+    const result = new Set<string>();
+    for (const [, props] of this.allMethodConditionProps()) {
+      for (const p of props) result.add(p);
+    }
+    return result;
+  });
+
+  /** Whether a specific property appears in a specific method’s conditions. */
+  isConditionPropFor(methodId: string, propName: string): boolean {
+    return this.allMethodConditionProps().get(methodId)?.has(propName) ?? false;
+  }
 
   /** Count how many branches in a method can be resolved with current values. */
   methodBranchStatus(method: MethodNode): { resolved: number; total: number } {

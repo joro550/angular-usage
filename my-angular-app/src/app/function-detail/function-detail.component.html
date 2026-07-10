@@ -15,17 +15,23 @@
       </button>
       <span class="text-base-content/20">/</span>
       <span class="font-mono font-semibold">{{ method().name }}</span>
-      @if (method().isAsync) { <div class="badge badge-info badge-sm font-mono">async</div> }
-      @if (method().isLifecycle) { <div class="badge badge-warning badge-sm font-mono">lifecycle</div> }
+      @if (method().isAsync) {
+        <div class="badge badge-info badge-sm font-mono">async</div>
+      }
+      @if (method().isLifecycle) {
+        <div class="badge badge-warning badge-sm font-mono">lifecycle</div>
+      }
     </div>
 
     <!-- Tab switcher -->
     <div class="flex-none">
       <div class="tabs tabs-box tabs-sm">
-        <button class="tab" [class.tab-active]="activeTab() === 'overview'" (click)="activeTab.set('overview')">
+        <button class="tab" [class.tab-active]="activeTab() === 'overview'"
+                (click)="activeTab.set('overview')">
           Overview
         </button>
-        <button class="tab gap-1.5" [class.tab-active]="activeTab() === 'flow'" (click)="activeTab.set('flow')">
+        <button class="tab gap-1.5" [class.tab-active]="activeTab() === 'flow'"
+                (click)="activeTab.set('flow')">
           Flow Simulation
           @if (totalBranches() > 0) {
             <div class="badge badge-xs"
@@ -74,6 +80,12 @@
                 <span class="font-semibold text-base-content/70">{{ propChips().length }}</span>
                 propert{{ propChips().length !== 1 ? 'ies' : 'y' }} touched
               </span>
+              @if (branchingProps().length > 0) {
+                <span>
+                  <span class="font-semibold text-warning">{{ branchingProps().length }}</span>
+                  affect{{ branchingProps().length !== 1 ? '' : 's' }} branching
+                </span>
+              }
               @if (totalBranches() > 0) {
                 <span class="text-secondary cursor-pointer" (click)="activeTab.set('flow')">
                   <span class="font-semibold text-base-content/70">{{ totalBranches() }}</span>
@@ -130,21 +142,45 @@
         </section>
       }
 
-      <!-- Touched properties -->
+      <!-- Class properties touched -->
       @if (propChips().length > 0) {
         <section>
-          <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-4">
+          <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-1">
             CLASS PROPERTIES TOUCHED
           </div>
-          <div class="flex flex-wrap gap-3">
+
+          <!-- Legend row -->
+          <div class="flex items-center gap-4 mb-3 text-[10px] text-base-content/35">
+            <span class="flex items-center gap-1.5">
+              <svg class="w-2.5 h-2.5 text-warning" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 1.5l6.5 6.5-6.5 6.5L1.5 8z"/>
+              </svg>
+              appears in a condition — changing this value changes which branch runs
+            </span>
+          </div>
+
+          <div class="flex flex-wrap gap-2">
             @for (chip of propChips(); track chip.prop.name) {
-              <div class="card card-compact bg-base-200 border border-base-300">
+              <div
+                class="card card-compact border cursor-default"
+                [style.background]="chip.inCondition ? 'rgba(245,158,11,0.06)' : ''"
+                [style.border-color]="chip.inCondition ? 'rgba(245,158,11,0.35)' : ''"
+              >
                 <div class="card-body p-0">
                   <div class="flex items-center gap-2 px-3 py-2">
+                    <!-- Kind colour dot -->
                     <div class="w-2 h-2 rounded-full flex-none" [style.background]="chip.text"></div>
                     <span class="font-mono text-sm font-semibold">{{ chip.prop.name }}</span>
                     <span class="badge badge-xs font-mono border-0"
-                          [style.background]="chip.bg" [style.color]="chip.text">{{ chip.kind }}</span>
+                          [style.background]="chip.bg" [style.color]="chip.text">
+                      {{ chip.kind }}
+                    </span>
+                    @if (chip.inCondition) {
+                      <!-- Diamond = branching indicator -->
+                      <svg class="w-3 h-3 text-warning ml-0.5 flex-none" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M8 1.5l6.5 6.5-6.5 6.5L1.5 8z"/>
+                      </svg>
+                    }
                   </div>
                 </div>
               </div>
@@ -166,7 +202,9 @@
 
       <!-- Method body -->
       <section>
-        <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-3">METHOD BODY</div>
+        <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-3">
+          METHOD BODY
+        </div>
         <div class="mockup-code max-h-64 overflow-auto text-xs leading-relaxed">
           <pre class="px-5 py-3 whitespace-pre-wrap break-all"><code>{{ getFormattedBody() }}</code></pre>
         </div>
@@ -176,11 +214,13 @@
 
   <!-- ═══════════════════════════ FLOW SIMULATION TAB ══════════════════════ -->
   @if (activeTab() === 'flow') {
-    <div class="flex-1 overflow-hidden flex gap-0">
+    <div class="flex-1 overflow-hidden flex">
 
       <!-- Left: value inputs -->
-      <div class="w-72 flex-none border-r border-base-300 flex flex-col overflow-hidden bg-base-200/40">
-        <div class="px-4 pt-4 pb-2 border-b border-base-300">
+      <div class="w-72 flex-none border-r border-base-300 flex flex-col overflow-hidden">
+
+        <!-- Header -->
+        <div class="px-4 pt-4 pb-2 border-b border-base-300 bg-base-200/30">
           <div class="flex items-center justify-between">
             <h3 class="text-xs font-semibold tracking-widest opacity-50">PROPERTY VALUES</h3>
             @if (hasSimValues()) {
@@ -188,63 +228,116 @@
             }
           </div>
           <p class="text-[10px] text-base-content/30 mt-1">
-            Enter values to trace the execution path
+            Enter values to trace which branch of code runs
           </p>
         </div>
 
-        <div class="flex-1 overflow-auto px-3 py-3 space-y-2">
-          @if (simProps().length === 0) {
-            <p class="text-xs text-base-content/25 text-center py-8 italic">
+        <div class="flex-1 overflow-auto py-2">
+
+          <!-- ── Branching properties ── -->
+          @if (branchingProps().length > 0) {
+            <div class="px-3 pt-2 pb-1">
+              <div class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-warning/70 mb-2">
+                <svg class="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 1.5l6.5 6.5-6.5 6.5L1.5 8z"/>
+                </svg>
+                Affects branching
+              </div>
+
+              <div class="space-y-1.5">
+                @for (sp of branchingProps(); track sp.prop.name) {
+                  <div class="rounded-lg border px-3 py-2 bg-base-200"
+                       style="border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.04)">
+                    <div class="flex items-center gap-1.5 mb-1.5">
+                      <div class="w-1.5 h-1.5 rounded-full flex-none" [style.background]="sp.text"></div>
+                      <span class="font-mono text-xs font-semibold text-base-content/80">{{ sp.prop.name }}</span>
+                      <span class="badge badge-xs font-mono border-0 ml-auto opacity-60"
+                            [style.background]="sp.bg" [style.color]="sp.text">{{ sp.kind }}</span>
+                    </div>
+                    <input
+                      type="text"
+                      class="input input-xs input-bordered font-mono w-full"
+                      [placeholder]="sp.kind === 'computed' ? '(read-only)' : 'value…'"
+                      [disabled]="sp.kind === 'computed' || sp.kind === 'output'"
+                      [value]="simValues()[sp.prop.name] ?? ''"
+                      (input)="onSimInput(sp.prop.name, $event)"
+                    />
+                  </div>
+                }
+              </div>
+            </div>
+          } @else if (simProps().length === 0) {
+            <p class="text-xs text-base-content/25 text-center py-8 italic px-3">
               No class properties touched
             </p>
           }
-          @for (prop of simProps(); track prop.name) {
-            <div class="card card-compact bg-base-200 border border-base-300">
-              <div class="card-body px-3 py-2 gap-1">
-                <div class="flex items-center gap-1.5">
-                  <div class="w-1.5 h-1.5 rounded-full flex-none"
-                       [style.background]="propKindColor(prop.kind)"></div>
-                  <span class="font-mono text-xs font-semibold truncate">{{ prop.name }}</span>
-                  <span class="badge badge-xs font-mono opacity-60 ml-auto border-0"
-                        style="background: rgba(255,255,255,0.05); color: #94a3b8">{{ prop.kind }}</span>
-                </div>
-                <input
-                  type="text"
-                  class="input input-xs input-bordered font-mono w-full"
-                  [placeholder]="prop.kind === 'computed' ? '(read-only)' : 'value…'"
-                  [disabled]="prop.kind === 'computed' || prop.kind === 'output'"
-                  [value]="simValues()[prop.name] ?? ''"
-                  (input)="onSimInput(prop.name, $event)"
-                />
+
+          <!-- ── Access-only properties ── -->
+          @if (accessOnlyProps().length > 0) {
+            <div class="px-3 pt-3 pb-1">
+              <div class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-base-content/30 mb-2">
+                Also accessed
+                <span class="font-normal normal-case text-base-content/20">(not in conditions)</span>
+              </div>
+
+              <div class="space-y-1.5">
+                @for (sp of accessOnlyProps(); track sp.prop.name) {
+                  <div class="rounded-lg border border-base-300 px-3 py-2 bg-base-200/50">
+                    <div class="flex items-center gap-1.5 mb-1.5">
+                      <div class="w-1.5 h-1.5 rounded-full flex-none opacity-50" [style.background]="sp.text"></div>
+                      <span class="font-mono text-xs font-semibold text-base-content/50">{{ sp.prop.name }}</span>
+                      <span class="badge badge-xs font-mono border-0 ml-auto opacity-40"
+                            [style.background]="sp.bg" [style.color]="sp.text">{{ sp.kind }}</span>
+                    </div>
+                    <input
+                      type="text"
+                      class="input input-xs input-bordered font-mono w-full opacity-60"
+                      placeholder="value…"
+                      [disabled]="sp.kind === 'computed' || sp.kind === 'output'"
+                      [value]="simValues()[sp.prop.name] ?? ''"
+                      (input)="onSimInput(sp.prop.name, $event)"
+                    />
+                  </div>
+                }
               </div>
             </div>
           }
 
           <!-- Type hint -->
-          <div class="text-[10px] text-base-content/25 px-1 pt-2 space-y-0.5">
-            <p>Accepted values:</p>
-            <p class="font-mono">true · false · 42 · "text"</p>
+          <div class="text-[10px] text-base-content/20 px-4 pt-3 space-y-0.5">
+            <p>Accepted: <span class="font-mono">true · false · 42 · "text"</span></p>
             <p class="font-mono">null · [1,2,3] · &#123;"k":"v"&#125;</p>
           </div>
         </div>
+
+        <!-- Status footer -->
+        @if (branchingProps().length > 0) {
+          <div class="px-4 py-2 border-t border-base-300 text-[10px]"
+               [class.text-success]="allBranchingPropsSet()"
+               [class.text-base-content/30]="!allBranchingPropsSet()">
+            @if (allBranchingPropsSet()) {
+              ✓ All branching properties set — full path traced
+            } @else {
+              Set the {{ branchingProps().length }} branching propert{{ branchingProps().length !== 1 ? 'ies' : 'y' }} above to trace execution
+            }
+          </div>
+        }
       </div>
 
       <!-- Right: flow visualization -->
       <div class="flex-1 overflow-auto px-5 py-4">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-xs font-semibold tracking-widest opacity-50">EXECUTION FLOW</h3>
-          @if (hasSimValues()) {
-            <div class="flex items-center gap-2 text-xs text-base-content/40">
-              @if (resolvedBranches() === totalBranches() && totalBranches() > 0) {
+          @if (totalBranches() > 0) {
+            <div class="text-xs text-base-content/40">
+              @if (resolvedBranches() === totalBranches()) {
                 <span class="text-success">All {{ totalBranches() }} branches resolved</span>
               } @else if (resolvedBranches() > 0) {
-                <span class="text-warning">{{ resolvedBranches() }}/{{ totalBranches() }} branches resolved</span>
-              } @else if (totalBranches() > 0) {
-                <span>Set values to trace branches</span>
+                <span class="text-warning">{{ resolvedBranches() }}/{{ totalBranches() }} resolved</span>
+              } @else {
+                <span>Enter branching property values to trace execution</span>
               }
             </div>
-          } @else if (totalBranches() > 0) {
-            <span class="text-xs text-base-content/30">Enter values on the left to trace branches</span>
           }
         </div>
 
@@ -264,47 +357,50 @@
 
             <!-- Code statement -->
             @if (item.type === 'code') {
-              <div class="flex items-center gap-2 py-1 px-2 rounded text-base-content/50"
+              <div class="flex items-center gap-2 py-1 px-2 rounded"
                    [style.padding-left.px]="indent + 8">
                 <span class="text-base-content/20 select-none">▸</span>
-                <span class="text-base-content/50">{{ item.text }}</span>
+                <span class="text-base-content/45">{{ item.text }}</span>
               </div>
             }
 
-            <!-- IF / ELSE IF / ELSE head -->
+            <!-- IF / ELSE IF / ELSE condition head -->
             @if (item.type === 'if-head') {
               <div
-                   class="rounded-lg border border-base-300 px-3 py-2 transition-colors"
-                   [style.margin-left.px]="indent"
-                   [style.border-color]="item.result === true ? 'rgba(34,197,94,0.55)' : item.result === false ? 'rgba(239,68,68,0.4)' : ''"
-                   [style.background]="item.result === true ? 'rgba(34,197,94,0.07)' : item.result === false ? 'rgba(239,68,68,0.07)' : ''"
-                   [style.opacity]="item.result === false ? '0.4' : '1'">
+                class="rounded-lg border border-base-300 px-3 py-2 transition-colors"
+                [style.margin-left.px]="indent"
+                [style.border-color]="item.result === true ? 'rgba(34,197,94,0.55)' : item.result === false ? 'rgba(239,68,68,0.4)' : ''"
+                [style.background]="item.result === true ? 'rgba(34,197,94,0.07)' : item.result === false ? 'rgba(239,68,68,0.07)' : ''"
+                [style.opacity]="item.result === false ? '0.4' : '1'"
+              >
                 <div class="flex items-start gap-2">
-                  <!-- Diamond icon -->
+                  <!-- Branch diamond -->
                   <svg class="w-3.5 h-3.5 mt-0.5 flex-none"
                        [style.color]="item.result === true ? 'rgba(34,197,94,1)' : item.result === false ? 'rgba(239,68,68,1)' : 'rgba(148,163,184,0.4)'"
                        viewBox="0 0 16 16" fill="currentColor">
                     <path d="M8 1.5l6.5 6.5-6.5 6.5L1.5 8z"/>
                   </svg>
+
                   <div class="flex-1 min-w-0">
-                    <!-- Keyword label -->
                     <span class="text-[10px] font-semibold uppercase tracking-wider opacity-40 mr-1">
-                      {{ item.isElse ? 'else' : (item.condition ? (item.text?.startsWith('else') ? 'else if' : 'if') : 'else') }}
+                      {{ item.isElse ? 'else' : (item.text?.startsWith('else') ? 'else if' : 'if') }}
                     </span>
                     @if (item.condition) {
                       <span class="text-primary/80">{{ item.condition }}</span>
                     }
-                    <!-- Result indicator -->
+
+                    <!-- Result badge -->
                     @if (item.result === true) {
                       <span class="ml-2 badge badge-success badge-xs">✓ TRUE — branch taken</span>
                     } @else if (item.result === false) {
                       <span class="ml-2 badge badge-error badge-xs">✗ FALSE — skipped</span>
                     } @else if (item.condition && hasSimValues()) {
-                      <span class="ml-2 badge badge-neutral badge-xs">? unknown</span>
+                      <span class="ml-2 badge badge-neutral badge-xs">? unknown — missing branching value</span>
                     }
-                    <!-- Substituted expression -->
+
+                    <!-- Show the substituted expression so the user sees the maths -->
                     @if (item.substituted && item.substituted !== item.condition) {
-                      <div class="mt-1 text-[10px] text-base-content/30">
+                      <div class="mt-1 text-[10px] text-base-content/35 font-mono">
                         → {{ item.substituted }}
                       </div>
                     }
@@ -313,10 +409,11 @@
               </div>
             }
 
-            <!-- SWITCH head -->
+            <!-- SWITCH discriminant head -->
             @if (item.type === 'switch-head') {
-              <div class="rounded-lg border border-secondary/30 bg-secondary/5 px-3 py-2"
-                   [style.margin-left.px]="indent">
+              <div class="rounded-lg border border-secondary/30 px-3 py-2"
+                   [style.margin-left.px]="indent"
+                   style="background: rgba(139,92,246,0.04)">
                 <div class="flex items-center gap-2">
                   <svg class="w-3.5 h-3.5 text-secondary/60 flex-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -336,7 +433,8 @@
                    [style.background]="item.taken ? 'rgba(34,197,94,0.07)' : ''"
                    [style.opacity]="item.result === false ? '0.4' : '1'">
                 <span class="text-[10px] text-base-content/30">case</span>
-                <span [class.text-success]="item.taken" [class.text-base-content/50]="!item.taken">
+                <span [class.text-success]="item.taken"
+                      [class.text-base-content/50]="!item.taken">
                   {{ item.caseLabel }}
                 </span>
                 @if (item.taken) {
@@ -349,27 +447,29 @@
 
             <!-- RETURN -->
             @if (item.type === 'return') {
-              <div class="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2"
-                   [style.margin-left.px]="indent">
+              <div class="flex items-center gap-2 rounded-lg border border-primary/30 px-3 py-2"
+                   [style.margin-left.px]="indent"
+                   style="background: rgba(99,102,241,0.05)">
                 <svg class="w-3.5 h-3.5 text-primary/60 flex-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                     d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"/>
                 </svg>
                 <span class="text-[10px] font-semibold uppercase tracking-wider text-primary/40 mr-1">return</span>
-                <span class="text-primary/70 truncate">{{ item.text?.replace(/^return\s*/,'') }}</span>
+                <span class="text-primary/70 truncate">{{ item.text?.replace('return ', '') }}</span>
               </div>
             }
 
             <!-- THROW -->
             @if (item.type === 'throw') {
-              <div class="flex items-center gap-2 rounded-lg border border-error/30 bg-error/5 px-3 py-2"
-                   [style.margin-left.px]="indent">
+              <div class="flex items-center gap-2 rounded-lg border border-error/30 px-3 py-2"
+                   [style.margin-left.px]="indent"
+                   style="background: rgba(239,68,68,0.05)">
                 <svg class="w-3.5 h-3.5 text-error/60 flex-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                     d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z"/>
                 </svg>
                 <span class="text-[10px] font-semibold uppercase tracking-wider text-error/40 mr-1">throw</span>
-                <span class="text-error/70 truncate">{{ item.text?.replace(/^throw\s*/,'') }}</span>
+                <span class="text-error/70 truncate">{{ item.text?.replace('throw ', '') }}</span>
               </div>
             }
 

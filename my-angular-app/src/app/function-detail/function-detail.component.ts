@@ -1,20 +1,20 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { MethodNode, ClassProperty, PropertyKind } from '../models/project.model';
 import { StateService } from '../services/state.service';
-import {
-  FlowParserService,
-  FlowDisplayItem,
-} from '../services/flow-parser.service';
+import { FlowParserService, FlowDisplayItem } from '../services/flow-parser.service';
 
-interface CalledMethodCard {
-  method: MethodNode;
-}
-
-interface PropChip {
+// Unified property info used by both the overview and flow tabs
+export interface PropInfo {
   prop: ClassProperty;
   kind: PropertyKind;
   bg: string;
   text: string;
+  /** True when this property appears in an if/switch/ternary/loop condition. */
+  inCondition: boolean;
+}
+
+interface CalledMethodCard {
+  method: MethodNode;
 }
 
 const PROP_COLORS: Record<PropertyKind, { bg: string; text: string }> = {
@@ -43,6 +43,22 @@ export class FunctionDetailComponent {
 
   readonly activeTab = signal<DetailTab>('overview');
 
+  // ── Parsed flow tree (shared by both tabs) ────────────────────────────────
+
+  readonly flowNodes = computed(() => {
+    const body = this.method().body;
+    return body?.trim() ? this.parser.parse(body) : [];
+  });
+
+  /**
+   * Set of property names that appear inside branching conditions —
+   * if/else-if expressions, switch discriminants, ternary conditions, loop guards.
+   * Only these properties actually change which code path executes.
+   */
+  readonly conditionPropNames = computed<Set<string>>(() =>
+    this.parser.extractConditionProps(this.flowNodes()),
+  );
+
   // ── Overview tab ──────────────────────────────────────────────────────────
 
   readonly calledMethodCards = computed<CalledMethodCard[]>(() => {
@@ -55,48 +71,86 @@ export class FunctionDetailComponent {
       .map(m => ({ method: m! }));
   });
 
-  readonly propChips = computed<PropChip[]>(() => {
+  /**
+   * All class properties this method touches, annotated with whether each
+   * one appears in a branching condition.
+   */
+  readonly propChips = computed<PropInfo[]>(() => {
     const method = this.method();
     const comp = this.comp();
     if (!comp) return [];
+    const condNames = this.conditionPropNames();
+
     return method.touchedProperties
       .map(name => {
         const prop = comp.properties.find(p => p.name === name);
         if (!prop) return null;
         const colors = PROP_COLORS[prop.kind] ?? PROP_COLORS['regular'];
-        return { prop, kind: prop.kind, ...colors } as PropChip;
+        return {
+          prop,
+          kind: prop.kind,
+          bg: colors.bg,
+          text: colors.text,
+          inCondition: condNames.has(name),
+        } as PropInfo;
       })
-      .filter(Boolean) as PropChip[];
+      .filter(Boolean)
+      // Branching properties shown first
+      .sort((a, b) => (b!.inCondition ? 1 : 0) - (a!.inCondition ? 1 : 0)) as PropInfo[];
   });
 
   // ── Flow / simulation tab ─────────────────────────────────────────────────
 
-  /** All class properties that this method touches — the set we offer inputs for. */
-  readonly simProps = computed<ClassProperty[]>(() => {
-    const comp = this.comp();
-    if (!comp) return [];
-    return this.method().touchedProperties
-      .map(name => comp.properties.find(p => p.name === name))
-      .filter(Boolean) as ClassProperty[];
-  });
-
   readonly simValues = this.state.simulationValues;
 
-  /** Parse the method body into a flow tree, then evaluate with current values. */
-  readonly displayItems = computed<FlowDisplayItem[]>(() => {
-    const body = this.method().body;
-    if (!body?.trim()) return [];
-    const nodes = this.parser.parse(body);
-    const evaluated = this.parser.evaluate(nodes, this.simValues());
-    return this.parser.flatten(evaluated);
+  /**
+   * All touched properties, annotated and sorted so branching properties come first.
+   * Inputs for non-branching properties are still offered — they may appear in
+   * switch case labels or ternary branches even if not in a top-level condition.
+   */
+  readonly simProps = computed<PropInfo[]>(() => {
+    const comp = this.comp();
+    if (!comp) return [];
+    const condNames = this.conditionPropNames();
+
+    return this.method().touchedProperties
+      .map(name => {
+        const prop = comp.properties.find(p => p.name === name);
+        if (!prop) return null;
+        const colors = PROP_COLORS[prop.kind] ?? PROP_COLORS['regular'];
+        return {
+          prop,
+          kind: prop.kind,
+          bg: colors.bg,
+          text: colors.text,
+          inCondition: condNames.has(name),
+        } as PropInfo;
+      })
+      .filter(Boolean)
+      .sort((a, b) => (b!.inCondition ? 1 : 0) - (a!.inCondition ? 1 : 0)) as PropInfo[];
   });
 
-  /** True if any simulation value has been entered. */
+  /** Properties that appear in conditions — entering these changes which branch runs. */
+  readonly branchingProps = computed<PropInfo[]>(() =>
+    this.simProps().filter(p => p.inCondition),
+  );
+
+  /** Properties accessed in code but not in any condition. */
+  readonly accessOnlyProps = computed<PropInfo[]>(() =>
+    this.simProps().filter(p => !p.inCondition),
+  );
+
   readonly hasSimValues = computed(() =>
     Object.values(this.simValues()).some(v => v.trim() !== ''),
   );
 
-  /** Count of branches that could be evaluated. */
+  readonly displayItems = computed<FlowDisplayItem[]>(() => {
+    const nodes = this.flowNodes();
+    if (!nodes.length) return [];
+    const evaluated = this.parser.evaluate(nodes, this.simValues());
+    return this.parser.flatten(evaluated);
+  });
+
   readonly resolvedBranches = computed(() =>
     this.displayItems().filter(i => i.type === 'if-head' && i.result !== null).length,
   );
@@ -104,6 +158,15 @@ export class FunctionDetailComponent {
   readonly totalBranches = computed(() =>
     this.displayItems().filter(i => i.type === 'if-head' && !i.isElse).length,
   );
+
+  /** True if all branching properties have a value entered. */
+  readonly allBranchingPropsSet = computed(() => {
+    const vals = this.simValues();
+    return this.branchingProps().length > 0 &&
+           this.branchingProps().every(p => (vals[p.prop.name] ?? '').trim() !== '');
+  });
+
+  // ── Event handlers ────────────────────────────────────────────────────────
 
   onSimInput(name: string, event: Event): void {
     this.state.setSimValue(name, (event.target as HTMLInputElement).value);
@@ -116,8 +179,6 @@ export class FunctionDetailComponent {
   propKindColor(kind: PropertyKind): string {
     return PROP_COLORS[kind]?.text ?? '#94a3b8';
   }
-
-  // ── Shared helpers ────────────────────────────────────────────────────────
 
   navigateToMethod(method: MethodNode): void {
     this.state.selectMethod(method);
