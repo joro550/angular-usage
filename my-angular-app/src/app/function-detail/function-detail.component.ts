@@ -907,4 +907,32 @@ export class FunctionDetailComponent implements OnDestroy {
   propKindColor(kind: PropertyKind): string {
     return PROP_COLORS[kind]?.text ?? '#94a3b8';
   }
+
+  // ── Computed property dep drill-down ────────────────────────────────────────
+
+  readonly expandedComputedProp = signal<string | null>(null);
+
+  toggleComputedProp(name: string): void {
+    this.expandedComputedProp.update(cur => cur === name ? null : name);
+  }
+
+  getComputedDeps(prop: ClassProperty): Array<{ name: string; kind: PropertyKind; bg: string; text: string }> {
+    if (prop.kind !== 'computed' || !prop.computedBody) return [];
+    const comp = this.comp();
+    if (!comp) return [];
+    const propMap = new Map(comp.properties.map(p => [p.name, p]));
+    const deps: Array<{ name: string; kind: PropertyKind; bg: string; text: string }> = [];
+    const seen = new Set<string>();
+    const pat = /\bthis\.(\w+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = pat.exec(prop.computedBody)) !== null) {
+      const name = m[1];
+      if (seen.has(name) || !propMap.has(name)) continue;
+      seen.add(name);
+      const dep = propMap.get(name)!;
+      const colors = PROP_COLORS[dep.kind] ?? PROP_COLORS['regular'];
+      deps.push({ name, kind: dep.kind, bg: colors.bg, text: colors.text });
+    }
+    return deps;
+  }
 }

@@ -350,90 +350,94 @@ export class FlowParserService {
   private parseBlock(src: string, from: number, to: number): { nodes: FlowNode[]; end: number } {
     const nodes: FlowNode[] = [];
     let i = from;
-    let codeBuf = '';
+    // Track the start of the current statement in the raw source so we can
+    // slice the original text (preserving spaces) instead of accumulating
+    // character-by-character (which dropped whitespace via skipWS).
+    let stmtStart = -1;
 
-    const flushCode = () => {
-      const t = codeBuf.trim();
+    const flushCode = (end: number) => {
+      if (stmtStart < 0) return;
+      const t = src.slice(stmtStart, end).trim();
       if (t) nodes.push({ id: this.uid(), nodeKind: 'code', text: t });
-      codeBuf = '';
+      stmtStart = -1;
     };
 
     while (i < to) {
-      i = this.skipWS(src, i);
+      // Skip whitespace — but only when we're not mid-statement
+      if (stmtStart < 0) i = this.skipWS(src, i);
       if (i >= to) break;
 
       // Skip line comments
       if (src[i] === '/' && src[i + 1] === '/') {
+        if (stmtStart >= 0) { flushCode(i); }
         while (i < to && src[i] !== '\n') i++;
         continue;
       }
       // Skip block comments
       if (src[i] === '/' && src[i + 1] === '*') {
+        if (stmtStart >= 0) { flushCode(i); }
         i += 2;
         while (i < to - 1 && !(src[i] === '*' && src[i + 1] === '/')) i++;
         i += 2;
         continue;
       }
 
-      // Keywords
+      // Structural keywords flush any buffered code first, then parse their own node
       if (this.kw(src, i, 'if')) {
-        flushCode();
+        flushCode(i);
         const r = this.parseIf(src, i, to);
         nodes.push(r.node); i = r.end; continue;
       }
       if (this.kw(src, i, 'else')) {
-        // orphan else — shouldn't happen with correct parsing, skip
         i++; continue;
       }
       if (this.kw(src, i, 'switch')) {
-        flushCode();
+        flushCode(i);
         const r = this.parseSwitch(src, i, to);
         nodes.push(r.node); i = r.end; continue;
       }
       if (this.kw(src, i, 'return')) {
-        flushCode();
+        flushCode(i);
         const e = this.stmtEnd(src, i, to);
         nodes.push({ id: this.uid(), nodeKind: 'return', text: src.slice(i, e + 1).trim() });
         i = e + 1; continue;
       }
       if (this.kw(src, i, 'throw')) {
-        flushCode();
+        flushCode(i);
         const e = this.stmtEnd(src, i, to);
         nodes.push({ id: this.uid(), nodeKind: 'throw', text: src.slice(i, e + 1).trim() });
         i = e + 1; continue;
       }
       if (this.kw(src, i, 'try')) {
-        flushCode();
+        flushCode(i);
         const r = this.parseTryCatch(src, i, to);
         nodes.push(r.node); i = r.end; continue;
       }
       if (this.kw(src, i, 'for') || this.kw(src, i, 'while') || this.kw(src, i, 'do')) {
-        flushCode();
+        flushCode(i);
         const r = this.parseLoop(src, i, to);
         nodes.push(r.node); i = r.end; continue;
       }
 
-      // Regular code accumulation
+      // Start tracking a new statement from here if we aren't already
+      if (stmtStart < 0) stmtStart = i;
+
+      // Advance over strings, blocks, and individual characters
       const ch = src[i];
       if (ch === '"' || ch === "'" || ch === '`') {
-        const e = this.skipStr(src, i);
-        codeBuf += src.slice(i, e);
-        i = e;
+        i = this.skipStr(src, i);
       } else if (ch === '{') {
-        const e = this.closeBrace(src, i);
-        codeBuf += src.slice(i, e + 1);
-        i = e + 1;
+        i = this.closeBrace(src, i) + 1;
       } else {
-        codeBuf += ch;
         if (ch === ';') {
-          const t = codeBuf.trim();
-          if (t && t !== ';') nodes.push({ id: this.uid(), nodeKind: 'code', text: t });
-          codeBuf = '';
+          // End of statement — slice raw source for the full text
+          flushCode(i + 1);
         }
         i++;
       }
     }
-    flushCode();
+    // Flush any trailing statement that had no semicolon
+    flushCode(i);
     return { nodes, end: i };
   }
 
@@ -840,7 +844,9 @@ export class FlowParserService {
   }
 
   private truncate(text: string, max: number): string {
-    const t = text.replace(/\s+/g, ' ').trim();
+    // Collapse only newlines/tabs to spaces; preserve the meaningful spacing
+    // within a statement so `const x = foo()` stays readable.
+    const t = text.replace(/[ \t]*\n[ \t]*/g, ' ').replace(/\t/g, ' ').trim();
     return t.length > max ? t.slice(0, max) + '…' : t;
   }
 }

@@ -11,6 +11,8 @@ export interface ClassProperty {
   name: string;
   kind: PropertyKind;
   dataType?: string;
+  /** For `computed` properties: the raw expression body inside computed(()=>…). */
+  computedBody?: string;
 }
 
 export interface MethodNode {

@@ -136,6 +136,33 @@ export class ComponentDetailComponent {
     return prop.kind === 'computed' || prop.kind === 'output';
   }
 
+  /**
+   * For a `computed` property, parse its body and return the names of signals
+   * (other `this.xxx` accesses) it depends on, filtered to known properties.
+   */
+  getComputedDeps(prop: ClassProperty): string[] {
+    if (prop.kind !== 'computed' || !prop.computedBody) return [];
+    const propNames = new Set(this.comp().properties.map(p => p.name));
+    const deps = new Set<string>();
+    const pat = /\bthis\.(\w+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = pat.exec(prop.computedBody)) !== null) {
+      const name = m[1];
+      if (propNames.has(name)) deps.add(name);
+    }
+    return [...deps];
+  }
+
+  readonly expandedComputedProp = signal<string | null>(null);
+
+  toggleComputedProp(name: string): void {
+    this.expandedComputedProp.update(cur => cur === name ? null : name);
+  }
+
+  getPropKind(name: string): PropertyKind {
+    return this.comp().properties.find(p => p.name === name)?.kind ?? 'regular';
+  }
+
   // ── Appearance helpers ─────────────────────────────────────────────────────
 
   propColors(kind: PropertyKind) {

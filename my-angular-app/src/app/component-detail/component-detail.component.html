@@ -189,14 +189,61 @@
         <div class="divider divider-start text-xs font-semibold tracking-widest opacity-40 mt-0 mb-3">
           CLASS PROPERTIES
         </div>
-        <div class="flex flex-wrap gap-2">
+        <div class="flex flex-wrap gap-2 items-start">
           @for (prop of comp().properties; track prop.name) {
             @let colors = propColors(prop.kind);
-            <span class="badge gap-1.5 font-mono border-0"
-                  [style.background]="colors.bg" [style.color]="colors.text">
-              <span class="font-semibold">{{ prop.name }}</span>
-              <span class="opacity-55 text-[10px]">{{ colors.label }}</span>
-            </span>
+            @let deps = getComputedDeps(prop);
+            @let isExpanded = expandedComputedProp() === prop.name;
+
+            @if (prop.kind === 'computed' && deps.length > 0) {
+              <!-- Clickable computed chip with dep expansion -->
+              <div class="flex flex-col gap-1">
+                <button class="badge gap-1.5 font-mono border cursor-pointer transition-all"
+                        [style.background]="isExpanded ? colors.text : colors.bg"
+                        [style.color]="isExpanded ? '#000' : colors.text"
+                        [style.border-color]="colors.text"
+                        [style.opacity]="'1'"
+                        (click)="toggleComputedProp(prop.name)"
+                        [title]="'Click to see signal dependencies'">
+                  <svg class="w-2.5 h-2.5 flex-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                  </svg>
+                  <span class="font-semibold">{{ prop.name }}</span>
+                  <span class="opacity-55 text-[10px]">computed</span>
+                  <svg class="w-2.5 h-2.5 transition-transform"
+                       [style.transform]="isExpanded ? 'rotate(180deg)' : ''"
+                       fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                  </svg>
+                </button>
+                @if (isExpanded) {
+                  <div class="rounded-lg border px-3 py-2 text-[10px] font-mono"
+                       [style.border-color]="colors.text + '55'"
+                       [style.background]="colors.bg">
+                    <div class="text-[9px] font-semibold uppercase tracking-wider opacity-50 mb-1.5">reads from</div>
+                    <div class="flex flex-col gap-1">
+                      @for (dep of deps; track dep) {
+                        @let depKind = getPropKind(dep);
+                        @let depColors = propColors(depKind);
+                        <div class="flex items-center gap-1.5">
+                          <div class="w-1.5 h-1.5 rounded-full flex-none" [style.background]="depColors.text"></div>
+                          <span [style.color]="depColors.text">{{ dep }}</span>
+                          <span class="opacity-40">{{ depKind }}</span>
+                        </div>
+                      }
+                    </div>
+                  </div>
+                }
+              </div>
+            } @else {
+              <!-- Non-computed or computed without known deps -->
+              <span class="badge gap-1.5 font-mono border-0"
+                    [style.background]="colors.bg" [style.color]="colors.text">
+                <span class="font-semibold">{{ prop.name }}</span>
+                <span class="opacity-55 text-[10px]">{{ colors.label }}</span>
+              </span>
+            }
           }
           @empty { <span class="text-xs italic text-base-content/25">No properties detected</span> }
         </div>

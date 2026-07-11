@@ -33,6 +33,7 @@ export interface ParsedProp {
   name: string;
   kind: PropertyKind;
   dataType?: string;
+  computedBody?: string;
 }
 
 export interface ParsedMethod {
@@ -326,7 +327,7 @@ class Parser {
    * an unmatched `}` (end of class body). Returns the detected PropertyKind
    * and, if it's an arrow-function field, the body text.
    */
-  readInitializer(): { kind: PropertyKind; isArrowFn: boolean; body: string } {
+  readInitializer(): { kind: PropertyKind; isArrowFn: boolean; body: string; computedBody?: string } {
     const initToks: Tok[] = [];
     let d = 0;
 
@@ -341,7 +342,7 @@ class Parser {
     }
     this.eat(';');
 
-    // ── Detect PropertyKind from the first relevant identifier ───────────────
+    // ── Detect PropertyKind from the first relevant identifier ───────────────────
     let kind: PropertyKind = 'regular';
     for (let j = 0; j < Math.min(initToks.length, 6); j++) {
       const t = initToks[j];
@@ -356,6 +357,40 @@ class Parser {
           kind = INIT_KIND[t.v] ?? 'regular';
         }
         break;
+      }
+    }
+
+    // ── For computed properties, capture the expression inside computed(() => ...)
+    let computedBody: string | undefined;
+    if (kind === 'computed') {
+      // initToks look like: computed ( ( ) => expr ) or computed ( ( ) => { ... } )
+      // Find the arrow inside the outer call parens
+      let innerArrow = -1;
+      let dd2 = 0;
+      for (let j = 0; j < initToks.length; j++) {
+        const v = initToks[j].v;
+        if (v === '(' || v === '[' || v === '{') dd2++;
+        else if (v === ')' || v === ']' || v === '}') { if (dd2 > 0) dd2--; }
+        else if (v === '=>' && dd2 === 1) { innerArrow = j; break; } // depth 1 = inside the computed() call
+      }
+      if (innerArrow >= 0) {
+        const afterArrow = initToks[innerArrow + 1];
+        if (afterArrow?.v === '{') {
+          // Block body
+          const bodyStart = afterArrow.p + 1;
+          const last = initToks[initToks.length - 1];
+          computedBody = last?.v === ')' || last?.v === '}'
+            ? this.src.slice(bodyStart, initToks[initToks.length - 2]?.p ?? bodyStart).trim()
+            : undefined;
+        } else if (afterArrow) {
+          // Expression body — everything after => until the closing ) of computed()
+          // Find the last token before the closing paren of computed()
+          const exprToks = initToks.slice(innerArrow + 1);
+          // Drop trailing ')' that closes the computed() call
+          const lastIdx = exprToks.length - 1;
+          const exprEnd = exprToks[lastIdx]?.v === ')' ? lastIdx : exprToks.length;
+          computedBody = exprToks.slice(0, exprEnd).map(t => t.v).join(' ');
+        }
       }
     }
 
@@ -386,7 +421,7 @@ class Parser {
       }
     }
 
-    return { kind, isArrowFn, body };
+    return { kind, isArrowFn, body, computedBody };
   }
 
   // ── @Component decorator ─────────────────────────────────────────────────
@@ -555,12 +590,12 @@ class Parser {
         }
         this.advance(); // '='
 
-        const { kind, isArrowFn, body } = this.readInitializer();
+        const { kind, isArrowFn, body, computedBody } = this.readInitializer();
 
         if (isArrowFn) {
           methods.push({ name, params: '', isAsync, isLifecycle: LIFECYCLE.has(name), body });
         } else {
-          properties.push({ name, kind, dataType: dataType || undefined });
+          properties.push({ name, kind, dataType: dataType || undefined, computedBody: computedBody || undefined });
         }
       }
     }
