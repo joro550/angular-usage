@@ -245,6 +245,97 @@ function buildObjectFromFields(
   return anySet ? obj : null;
 }
 
+// ─── Eval sandbox ────────────────────────────────────────────────────────────
+
+/** Returned by stubs when a `this` access could not be resolved. */
+const EVAL_STUB: unique symbol = Symbol('eval_stub');
+
+/**
+ * Builds a Proxy for `this` inside the sandboxed evaluator.
+ *
+ * - Known names (in `base`) are returned as-is, wrapped so they can be
+ *   called as zero-arg functions (signal pattern: `this.count()`) AND
+ *   have their own properties accessible (`this.user.name`).
+ * - Unknown names return a recursive stub so property/method chains on
+ *   unresolved values don't throw — they just return EVAL_STUB.
+ */
+function buildThisProxy(base: Record<string, unknown>): unknown {
+  function wrapValue(v: unknown): unknown {
+    if (v === null || v === undefined) {
+      const fn = (): unknown => v;
+      return new Proxy(fn as unknown as Record<string, unknown>, valueHandler(v));
+    }
+    if (typeof v === 'function') return v;
+    if (typeof v === 'object') {
+      // Real object — make it callable as zero-arg getter AND forward property access
+      const fn = (): unknown => v;
+      return new Proxy(fn as unknown as Record<string, unknown>, valueHandler(v));
+    }
+    // Primitive: wrap as callable
+    const fn = (): unknown => v;
+    return new Proxy(fn as unknown as Record<string, unknown>, valueHandler(v));
+  }
+
+  function valueHandler(v: unknown): ProxyHandler<Record<string, unknown>> {
+    return {
+      get(_t, prop) {
+        if (typeof prop === 'symbol') {
+          if (prop === Symbol.toPrimitive) return () => v;
+          if (prop === Symbol.iterator && Array.isArray(v))
+            return (v as unknown[])[Symbol.iterator].bind(v);
+          return undefined;
+        }
+        if (v !== null && v !== undefined && typeof v === 'object') {
+          const obj = v as Record<string, unknown>;
+          if (prop in obj) {
+            const child = obj[prop];
+            return typeof child === 'function'
+              ? (child as (...a: unknown[]) => unknown).bind(obj)
+              : wrapValue(child);
+          }
+          // Array / built-in methods
+          if (Array.isArray(v)) {
+            const arr = v as unknown[];
+            const method = (arr as unknown as Record<string, unknown>)[prop];
+            if (typeof method === 'function')
+              return (method as (...a: unknown[]) => unknown).bind(arr);
+          }
+        }
+        if (typeof v === 'string') {
+          const proto = String.prototype as unknown as Record<string, unknown>;
+          if (typeof proto[prop as string] === 'function')
+            return (proto[prop as string] as (...a: unknown[]) => unknown).bind(v);
+        }
+        // Unknown property on a known value — return stub
+        return stubFn();
+      },
+      apply(_t, _ctx, args): unknown {
+        return args.length === 0 ? v : v;
+      },
+    };
+  }
+
+  function stubFn(): unknown {
+    const fn = (): typeof EVAL_STUB => EVAL_STUB;
+    return new Proxy(fn as unknown as Record<string, unknown>, {
+      get(_t, prop) {
+        if (prop === Symbol.toPrimitive) return () => undefined;
+        return stubFn();
+      },
+      apply(): typeof EVAL_STUB { return EVAL_STUB; },
+    });
+  }
+
+  return new Proxy(base, {
+    get(target, prop) {
+      if (typeof prop === 'symbol') return undefined;
+      const key = prop as string;
+      if (key in target) return wrapValue(target[key]);
+      return stubFn(); // unknown this.xxx — return stub, not throw
+    },
+  });
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 @Component({
@@ -605,44 +696,76 @@ export class FunctionDetailComponent implements OnDestroy {
     }, 60);
   }
 
-  /** Substitute param values, sim-values, and mock returns into an expression and try to evaluate it. */
+  /** Evaluate an expression using variable injection so object/method chains work correctly. */
   private evalExpression(expr: string): { substituted: string; value: string | null } {
-    let sub = expr;
     const vals = this.allInputValues();
     const comp = this.comp();
+    const mockReturns = this.state.mockReturnValues();
 
-    // Substitute parameter values first (bare names, not this.xxx)
+    // ── Build a display-only substituted string (for the UI label) ───────────
+    let sub = expr;
     for (const param of this.parsedParams()) {
       const raw = vals[param.name];
       if (!raw?.trim()) continue;
-      const jsonVal = JSON.stringify(this.parser.parseValue(raw));
-      sub = sub.replace(new RegExp(`\\b${param.name}\\b`, 'g'), jsonVal);
+      const j = JSON.stringify(this.parser.parseValue(raw));
+      sub = sub.replace(new RegExp(`(?<![.\\w])\\b${param.name}\\b(?![\\w.])`, 'g'), j);
     }
-
     if (comp) {
-      // Substitute property values
       for (const prop of comp.properties) {
         const raw = vals[prop.name];
         if (!raw?.trim()) continue;
-        const jsonVal = JSON.stringify(this.parser.parseValue(raw));
-        sub = sub.replace(new RegExp(`\\bthis\.${prop.name}\\s*\\(\\)`, 'g'), jsonVal);
-        sub = sub.replace(new RegExp(`\\bthis\.${prop.name}(?![\\w(])`, 'g'), jsonVal);
+        const j = JSON.stringify(this.parser.parseValue(raw));
+        sub = sub.replace(new RegExp(`\\bthis\.${prop.name}\\s*\\(\\)`, 'g'), j);
+        sub = sub.replace(new RegExp(`\\bthis\.${prop.name}(?![\\w.(])`, 'g'), j);
       }
-      // Substitute mocked method return values (any-arg calls)
-      const mockReturns = this.state.mockReturnValues();
       for (const method of comp.methods) {
         const raw = mockReturns[method.name];
         if (!raw?.trim()) continue;
-        const jsonVal = JSON.stringify(this.parser.parseValue(raw));
-        sub = sub.replace(new RegExp(`\\bthis\.${method.name}\\s*\\([^)]*\\)`, 'g'), jsonVal);
+        const j = JSON.stringify(this.parser.parseValue(raw));
+        sub = sub.replace(new RegExp(`\\bthis\.${method.name}\\s*\\([^)]*\\)`, 'g'), j);
       }
     }
 
-    if (/\bthis\./.test(sub)) return { substituted: sub, value: null };
+    // ── Build variable-injection scope ───────────────────────────────────────────
+    const varNames: string[] = [];
+    const varValues: unknown[] = [];
+
+    // Bare param names
+    for (const param of this.parsedParams()) {
+      const raw = vals[param.name];
+      if (!raw?.trim()) continue;
+      varNames.push(param.name);
+      varValues.push(this.parser.parseValue(raw));
+    }
+
+    // Build the `_this` proxy object
+    const thisObj: Record<string, unknown> = {};
+    if (comp) {
+      for (const prop of comp.properties) {
+        const raw = vals[prop.name];
+        if (raw?.trim()) thisObj[prop.name] = this.parser.parseValue(raw);
+      }
+      for (const method of comp.methods) {
+        const raw = mockReturns[method.name];
+        if (raw?.trim()) {
+          const v = this.parser.parseValue(raw);
+          thisObj[method.name] = () => v;
+        }
+      }
+    }
 
     try {
+      const paramDecls = varNames.map((n, i) => `var ${n} = __args[${i}];`).join(' ');
+      // Rewrite `this.xxx` → `__t.xxx` so the proxy intercepts all this-accesses
+      const rewritten = expr.replace(/\bthis\./g, '__t.');
       // eslint-disable-next-line no-new-func
-      const result = new Function(`return (${sub})`)();
+      const fn = new Function('__t', '__args', `${paramDecls} return (${rewritten});`);
+      const thisProxy = buildThisProxy(thisObj);
+      const result = fn(thisProxy, varValues);
+      if (result === EVAL_STUB) {
+        // Unknown this-access — fall through to substituted display
+        return { substituted: sub, value: null };
+      }
       const value =
         result === undefined ? 'undefined'
         : result === null ? 'null'
@@ -650,7 +773,20 @@ export class FunctionDetailComponent implements OnDestroy {
         : String(result);
       return { substituted: sub, value };
     } catch {
-      return { substituted: sub, value: null };
+      // Fallback: plain substituted eval
+      if (/\bthis\./.test(sub)) return { substituted: sub, value: null };
+      try {
+        // eslint-disable-next-line no-new-func
+        const result = new Function(`return (${sub})`)();
+        const value =
+          result === undefined ? 'undefined'
+          : result === null ? 'null'
+          : typeof result === 'object' ? JSON.stringify(result)
+          : String(result);
+        return { substituted: sub, value };
+      } catch {
+        return { substituted: sub, value: null };
+      }
     }
   }
 

@@ -89,6 +89,98 @@ export interface FlowDisplayItem {
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
+// ── Sandbox helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Sentinel object returned by stubs when a call cannot be resolved.
+ * The evaluator checks for this to distinguish "returned undefined" from
+ * "this access was unresolvable".
+ */
+const STUB_SENTINEL: unique symbol = Symbol('stub');
+
+/**
+ * Wrap a value so it can be:
+ *  - called as a zero-arg function  (signal pattern: `this.count()`)
+ *  - accessed as a property carrier (object pattern: `this.user.name`)
+ *  - called with any args           (method mock: `this.load(id)`)
+ *
+ * For plain objects/arrays the wrapper delegates property access to the
+ * underlying value, so `this.user.name` works correctly.
+ * For primitives the wrapper returns the primitive when called.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+type AnyFn = Function;
+
+function makeCallable(value: unknown): unknown {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fn: any = (..._args: unknown[]) => value;
+  return new Proxy(fn, callablePropHandler(value));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function callablePropHandler(value: unknown): ProxyHandler<any> {
+  return {
+    get(target: AnyFn, prop: string | symbol, receiver: unknown) {
+      if (prop === Symbol.toPrimitive) return () => value;
+      if (prop === 'valueOf') return Reflect.get(target, prop, receiver);
+      if (prop === Symbol.iterator && Array.isArray(value))
+        return (value as unknown[])[Symbol.iterator].bind(value);
+      if (value !== null && value !== undefined && typeof value === 'object') {
+        const obj = value as Record<string | symbol, unknown>;
+        if (prop in obj) {
+          const v = obj[prop];
+          return typeof v === 'function'
+            ? (v as (...a: unknown[]) => unknown).bind(value)
+            : makeCallable(v);
+        }
+      }
+      if (typeof value === 'string') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const v = (String.prototype as any)[prop as string];
+        if (typeof v === 'function') return (v as AnyFn).bind(value);
+      }
+      if (typeof value === 'number') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const v = (Number.prototype as any)[prop as string];
+        if (typeof v === 'function') return (v as AnyFn).bind(value);
+      }
+      return makeStubFn();
+    },
+    apply(_target: AnyFn, _thisArg: unknown, _args: unknown[]) {
+      return value;
+    },
+  };
+}
+
+/** A function that returns STUB_SENTINEL and whose properties also return stubs. */
+function makeStubFn(): unknown {
+  const fn = () => STUB_SENTINEL;
+  return new Proxy(fn, {
+    get(_t, prop) {
+      if (prop === Symbol.toPrimitive) return () => undefined;
+      return makeStubFn();
+    },
+    apply() { return STUB_SENTINEL; },
+  });
+}
+
+/**
+ * Wrap a plain object so unknown property accesses return stubs
+ * instead of undefined (preventing TypeError crashes in method chains).
+ */
+function makeDeepStub(base: Record<string, unknown>): unknown {
+  return new Proxy(base, {
+    get(target, prop) {
+      if (typeof prop === 'symbol') return undefined;
+      const key = prop as string;
+      if (key in target) return target[key];
+      return makeStubFn();
+    },
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+
 @Injectable({ providedIn: 'root' })
 export class FlowParserService {
   private _seq = 0;
@@ -724,29 +816,62 @@ export class FlowParserService {
 
   private evalAny(expr: string, values: Map<string, unknown>): { anyVal: unknown; substituted: string } {
     if (!expr.trim()) return { anyVal: undefined, substituted: '' };
-    let sub = expr;
 
+    // ── Step 1: build a plain-text substituted form for display ───────────────
+    // This is only used for the "substituted" label in the UI, not for actual
+    // evaluation. We show what values were plugged in.
+    let sub = expr;
     for (const [name, value] of values) {
       const json = JSON.stringify(value);
-      // Replace this.name() — signal/model/zero-arg call
       sub = sub.replace(new RegExp(`\\bthis\.${name}\\s*\\(\\)`, 'g'), json);
-      // Replace this.name(any args) — mocked method calls with arguments
-      sub = sub.replace(new RegExp(`\\bthis\.${name}\\s*\\([^)]*\\)`, 'g'), json);
-      // Replace this.name (not followed by word char or open paren)
-      sub = sub.replace(new RegExp(`\\bthis\.${name}(?![\\w(])`, 'g'), json);
-      // Replace bare param name (not preceded by a dot, i.e. not this.xxx)
-      sub = sub.replace(new RegExp(`(?<![.\\w])\\b${name}\\b(?![\\w(])`, 'g'), json);
+      sub = sub.replace(new RegExp(`\\bthis\.${name}(?![\\w.(])`, 'g'), json);
+      sub = sub.replace(new RegExp(`(?<![.\\w])\\b${name}\\b(?![\\w.])`, 'g'), json);
     }
 
-    // If unresolved this.xxx remain, we can't evaluate
-    if (/\bthis\./.test(sub)) return { anyVal: undefined, substituted: sub };
+    // ── Step 2: variable-injection evaluation ─────────────────────────────────
+    // Build a `__t` proxy and rewrite `this.xxx` → `__t.xxx` so that:
+    //   - `this.signal()` → invokes the callable wrapper → returns value
+    //   - `this.obj.field` → real property access on the JS object
+    //   - `this.obj.method()` → bound method from the real object
+    //   - `this.unknown.anything` → stub (doesn't throw)
+    //   - bare param names → available as var declarations in scope
+
+    // Build the __t proxy
+    const thisObj: Record<string, unknown> = {};
+    for (const [name, value] of values) {
+      if (name.includes('.')) continue;
+      thisObj[name] = makeCallable(value);
+    }
+    const thisProxy = makeDeepStub(thisObj);
+
+    // Rewrite `this.` → `__t.` (simple text replacement is safe here because
+    // string literals have already been excluded from sub-expression matching)
+    const rewritten = expr.replace(/\bthis\./g, '__t.');
+
+    // Declare bare-name variables from top-level values (param names)
+    const varNames: string[] = [];
+    const varValues: unknown[] = [];
+    for (const [name, value] of values) {
+      if (!name.includes('.')) { varNames.push(name); varValues.push(value); }
+    }
+    const paramDecls = varNames.map((n, i) => `var ${n} = __args[${i}];`).join(' ');
 
     try {
       // eslint-disable-next-line no-new-func
-      const result = new Function(`return (${sub})`)();
+      const fn = new Function('__t', '__args', `${paramDecls} return (${rewritten});`);
+      const result = fn(thisProxy, varValues);
+      if (result === STUB_SENTINEL) return { anyVal: undefined, substituted: sub };
       return { anyVal: result, substituted: sub };
     } catch {
-      return { anyVal: undefined, substituted: sub };
+      // Fallback: plain text-substitution eval
+      if (/\bthis\./.test(sub)) return { anyVal: undefined, substituted: sub };
+      try {
+        // eslint-disable-next-line no-new-func
+        const result = new Function(`return (${sub})`)();
+        return { anyVal: result, substituted: sub };
+      } catch {
+        return { anyVal: undefined, substituted: sub };
+      }
     }
   }
 
