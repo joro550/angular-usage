@@ -64,6 +64,28 @@ export class StateService {
     this.simulationValues.set({});
   }
 
+  // Parameter values for the currently-simulated method
+  readonly paramValues = signal<Record<string, string>>({});
+
+  setParamValue(name: string, value: string): void {
+    this.paramValues.update(v => ({ ...v, [name]: value }));
+  }
+
+  clearParamValues(): void {
+    this.paramValues.set({});
+  }
+
+  // Mock return values for called methods
+  readonly mockReturnValues = signal<Record<string, string>>({});
+
+  setMockReturn(methodName: string, value: string): void {
+    this.mockReturnValues.update(v => ({ ...v, [methodName]: value }));
+  }
+
+  clearMockReturns(): void {
+    this.mockReturnValues.set({});
+  }
+
   resetToUpload(): void {
     this.project.set(null);
     this.selectedComponentId.set(null);

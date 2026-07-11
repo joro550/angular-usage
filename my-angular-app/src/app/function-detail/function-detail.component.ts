@@ -1,4 +1,5 @@
 import { Component, computed, inject, OnDestroy, signal } from '@angular/core';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { MethodNode, ClassProperty, PropertyKind } from '../models/project.model';
 import { StateService } from '../services/state.service';
 import { FlowParserService, FlowDisplayItem } from '../services/flow-parser.service';
@@ -22,6 +23,38 @@ interface ReturnResult {
 
 interface CalledMethodCard { method: MethodNode; }
 
+/** A field within an object-typed parameter or property. */
+export interface ObjectField {
+  name: string;
+  type: string;
+  inputKind: 'checkbox' | 'number' | 'text';
+}
+
+/** A single parsed parameter with its name and resolved TypeScript type. */
+export interface ParsedParam {
+  name: string;
+  /** Raw TypeScript type string, e.g. "string", "number", "boolean", "User | null" */
+  type: string;
+  /** Whether this param appears in a branch condition in the method body. */
+  inCondition: boolean;
+  /** When the type is object-like, the known fields (may be empty for opaque named types). */
+  isObject: boolean;
+  fields: ObjectField[];
+}
+
+/** A property that may have been mutated during the simulated run. */
+export interface MutatedProp {
+  name: string;
+  kind: PropertyKind;
+  bg: string;
+  text: string;
+  /** The raw assignment expression found in the executed path. */
+  assignExpr: string;
+  /** Evaluated value after substitution, or null if not fully resolvable. */
+  value: string | null;
+  substituted: string;
+}
+
 export type DetailTab = 'overview' | 'flow';
 type PlayState = 'idle' | 'playing' | 'done';
 
@@ -37,6 +70,181 @@ const PROP_COLORS: Record<PropertyKind, { bg: string; text: string }> = {
   regular:  { bg: 'rgba(71,85,105,0.12)',   text: '#64748b' },
 };
 
+// ─── Pure helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Parse a raw TypeScript parameter string like:
+ *   `userId: string, isActive: boolean, count: number = 0, options?: MyOptions`
+ * into an array of { name, type } objects.
+ *
+ * Handles:
+ *  - Simple types:  `name: string`
+ *  - Union types:   `val: string | null`
+ *  - Generic types: `items: Array<string>`
+ *  - Optional:      `label?: string`  →  type becomes `string | undefined`
+ *  - Rest params:   `...args: string[]`
+ *  - Default vals:  `count: number = 0`  (default stripped, type kept)
+ *  - Destructured:  `{ a, b }: Opts`    (kept as single opaque param "{ a, b }")
+ *  - No annotation: `value`             (type becomes "unknown")
+ */
+function parseParamString(raw: string): { name: string; type: string }[] {
+  const results: { name: string; type: string }[] = [];
+  // Split on top-level commas (ignore commas inside <>, [], ())
+  const parts: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (c === '<' || c === '(' || c === '[' || c === '{') { depth++; cur += c; }
+    else if (c === '>' || c === ')' || c === ']' || c === '}') { depth--; cur += c; }
+    else if (c === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; }
+    else { cur += c; }
+  }
+  if (cur.trim()) parts.push(cur.trim());
+
+  for (const part of parts) {
+    if (!part) continue;
+    // Strip leading `...` for rest params
+    const stripped = part.replace(/^\.{3}/, '').trim();
+    // Find the colon that separates name from type (at depth 0)
+    let colonIdx = -1;
+    let d = 0;
+    for (let i = 0; i < stripped.length; i++) {
+      const c = stripped[i];
+      if (c === '<' || c === '(' || c === '[' || c === '{') d++;
+      else if (c === '>' || c === ')' || c === ']' || c === '}') d--;
+      else if (c === ':' && d === 0) { colonIdx = i; break; }
+    }
+
+    let name: string;
+    let rawType: string;
+    const optional = stripped.includes('?');
+
+    if (colonIdx === -1) {
+      // No type annotation
+      name = stripped.replace('?', '').trim();
+      rawType = 'unknown';
+    } else {
+      name = stripped.slice(0, colonIdx).replace('?', '').trim();
+      // Strip default value after `=` at depth 0
+      const afterColon = stripped.slice(colonIdx + 1).trim();
+      let eqIdx = -1;
+      let d2 = 0;
+      for (let i = 0; i < afterColon.length; i++) {
+        const c = afterColon[i];
+        if (c === '<' || c === '(' || c === '[' || c === '{') d2++;
+        else if (c === '>' || c === ')' || c === ']' || c === '}') d2--;
+        else if (c === '=' && d2 === 0) { eqIdx = i; break; }
+      }
+      rawType = (eqIdx === -1 ? afterColon : afterColon.slice(0, eqIdx)).trim();
+    }
+
+    if (optional && !rawType.includes('undefined')) {
+      rawType = rawType ? `${rawType} | undefined` : 'undefined';
+    }
+
+    if (name) results.push({ name, type: rawType });
+  }
+  return results;
+}
+
+/** Map a TypeScript type string to a simple HTML input kind. */
+function inputTypeFromString(typeStr: string): 'checkbox' | 'number' | 'text' {
+  const t = typeStr.toLowerCase().trim();
+  const parts = t.split('|').map(s => s.trim()).filter(s => s !== 'undefined' && s !== 'null');
+  if (parts.length > 0 && parts.every(p => p === 'boolean')) return 'checkbox';
+  if (parts.length > 0 && parts.every(p => p === 'number' || p === 'int' || p === 'float')) return 'number';
+  return 'text';
+}
+
+/**
+ * The set of TypeScript primitive / built-in type names that are NOT objects.
+ * Anything not in this list and not an array/generic is treated as an object type.
+ */
+const SCALAR_TYPES = new Set([
+  'string', 'number', 'boolean', 'bigint', 'symbol', 'any', 'unknown', 'never',
+  'void', 'null', 'undefined', 'object', 'date', 'regexp', 'error', 'function',
+]);
+
+/**
+ * Return true when a TypeScript type annotation represents an object/interface
+ * (i.e. the user should fill in individual fields rather than a raw value).
+ * Arrays, generics, and scalar types return false.
+ */
+function isObjectType(typeStr: string): boolean {
+  // Strip nullability: `User | null | undefined` → `User`
+  const parts = typeStr.split('|').map(s => s.trim()).filter(s => s !== 'null' && s !== 'undefined');
+  if (parts.length === 0) return false;
+  // If any part is an array or generic, treat as non-object (enter as JSON)
+  for (const p of parts) {
+    if (p.endsWith('[]') || p.includes('<') || p.includes('{')) continue;
+    // PascalCase name that isn't a known scalar → object
+    if (!/^[A-Z]/.test(p)) return false;
+    if (SCALAR_TYPES.has(p.toLowerCase())) return false;
+  }
+  // Inline object literal type `{ prop: type; ... }`
+  if (typeStr.trimStart().startsWith('{')) return true;
+  // All parts are PascalCase non-scalar names
+  return parts.every(p => /^[A-Z]/.test(p) && !SCALAR_TYPES.has(p.toLowerCase()));
+}
+
+/**
+ * Parse an inline TypeScript object literal type like `{ id: number; name: string; active: boolean }`
+ * into a list of ObjectField entries.  Returns [] for named/opaque types.
+ */
+function parseInlineObjectType(typeStr: string): ObjectField[] {
+  const trimmed = typeStr.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return [];
+  const inner = trimmed.slice(1, -1);
+  const fields: ObjectField[] = [];
+  // Split on `;` or `,` at depth 0
+  const parts: string[] = [];
+  let depth = 0, cur = '';
+  for (const c of inner) {
+    if (c === '<' || c === '(' || c === '[' || c === '{') { depth++; cur += c; }
+    else if (c === '>' || c === ')' || c === ']' || c === '}') { depth--; cur += c; }
+    else if ((c === ';' || c === ',') && depth === 0) { if (cur.trim()) parts.push(cur.trim()); cur = ''; }
+    else cur += c;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  for (const part of parts) {
+    const ci = part.indexOf(':');
+    if (ci === -1) continue;
+    const fname = part.slice(0, ci).replace('?', '').replace('readonly', '').trim();
+    const ftype = part.slice(ci + 1).trim();
+    if (fname) fields.push({ name: fname, type: ftype, inputKind: inputTypeFromString(ftype) });
+  }
+  return fields;
+}
+
+/**
+ * Try to reconstruct a plain object from dot-notation field entries in `vals`.
+ * Returns the object if at least one field has a value, null otherwise.
+ * Field entries use keys like "paramName.fieldName".
+ * When `fields` is empty (opaque named type), check for a "paramName" JSON entry.
+ */
+function buildObjectFromFields(
+  name: string,
+  fields: ObjectField[],
+  vals: Record<string, string>,
+): Record<string, unknown> | null {
+  if (fields.length === 0) return null; // opaque — no expansion
+  const obj: Record<string, unknown> = {};
+  let anySet = false;
+  for (const f of fields) {
+    const key = `${name}.${f.name}`;
+    const raw = vals[key];
+    if (!raw?.trim()) continue;
+    anySet = true;
+    const t = raw.trim();
+    if (t === 'true') obj[f.name] = true;
+    else if (t === 'false') obj[f.name] = false;
+    else if (!isNaN(Number(t))) obj[f.name] = Number(t);
+    else { try { obj[f.name] = JSON.parse(t); } catch { obj[f.name] = t; } }
+  }
+  return anySet ? obj : null;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 @Component({
@@ -45,8 +253,9 @@ const PROP_COLORS: Record<PropertyKind, { bg: string; text: string }> = {
   templateUrl: './function-detail.component.html',
 })
 export class FunctionDetailComponent implements OnDestroy {
-  readonly state = inject(StateService);
-  readonly parser = inject(FlowParserService);
+  readonly state    = inject(StateService);
+  readonly parser   = inject(FlowParserService);
+  private sanitizer = inject(DomSanitizer);
 
   readonly method = computed(() => this.state.selectedMethod()!);
   readonly comp   = computed(() => this.state.selectedComponent());
@@ -96,6 +305,55 @@ export class FunctionDetailComponent implements OnDestroy {
 
   readonly simValues = this.state.simulationValues;
 
+  /** Parsed parameter list for the current method. */
+  readonly parsedParams = computed<ParsedParam[]>(() => {
+    const raw = this.method().params?.trim();
+    if (!raw) return [];
+    const paramCondNames = this.parser.extractParamConditionNames(this.flowNodes());
+    return parseParamString(raw).map(p => {
+      const obj = isObjectType(p.type);
+      const fields = obj ? parseInlineObjectType(p.type) : [];
+      return { ...p, inCondition: paramCondNames.has(p.name), isObject: obj, fields };
+    });
+  });
+
+  readonly branchingParams = computed<ParsedParam[]>(() =>
+    this.parsedParams().filter(p => p.inCondition),
+  );
+  readonly accessOnlyParams = computed<ParsedParam[]>(() =>
+    this.parsedParams().filter(p => !p.inCondition),
+  );
+
+  /**
+   * Merged param values + sim values + mock returns — used for all evaluation.
+   * For object params, also injects a synthetic JSON key for the whole object
+   * built from the dot-notation field entries ("param.field" keys).
+   */
+  readonly allInputValues = computed<Record<string, string>>(() => {
+    const base: Record<string, string> = {
+      ...this.state.paramValues(),
+      ...this.state.simulationValues(),
+      ...this.state.mockReturnValues(),
+    };
+    // Reconstruct full object values from dot-notation field entries
+    for (const param of this.parsedParams()) {
+      if (!param.isObject) continue;
+      const obj = buildObjectFromFields(param.name, param.fields, base);
+      if (obj !== null) base[param.name] = JSON.stringify(obj);
+    }
+    // Same for object-typed class properties
+    const comp = this.comp();
+    if (comp) {
+      for (const prop of comp.properties) {
+        if (!prop.dataType || !isObjectType(prop.dataType)) continue;
+        const fields = parseInlineObjectType(prop.dataType);
+        const obj = buildObjectFromFields(prop.name, fields, base);
+        if (obj !== null) base[prop.name] = JSON.stringify(obj);
+      }
+    }
+    return base;
+  });
+
   readonly simProps = computed<PropInfo[]>(() => {
     const comp = this.comp();
     if (!comp) return [];
@@ -115,20 +373,24 @@ export class FunctionDetailComponent implements OnDestroy {
   readonly accessOnlyProps = computed<PropInfo[]>(() => this.simProps().filter(p => !p.inCondition));
 
   readonly hasSimValues = computed(() =>
-    Object.values(this.simValues()).some(v => v.trim() !== ''),
+    Object.values(this.allInputValues()).some(v => v.trim() !== ''),
   );
 
   readonly allBranchingPropsSet = computed(() => {
-    const vals = this.simValues();
-    return this.branchingProps().length > 0 &&
-           this.branchingProps().every(p => (vals[p.prop.name] ?? '').trim() !== '');
+    const vals = this.allInputValues();
+    const propsOk = this.branchingProps().length === 0 ||
+      this.branchingProps().every(p => (vals[p.prop.name] ?? '').trim() !== '');
+    const paramsOk = this.branchingParams().length === 0 ||
+      this.branchingParams().every(p => (vals[p.name] ?? '').trim() !== '');
+    return (this.branchingProps().length > 0 || this.branchingParams().length > 0)
+      && propsOk && paramsOk;
   });
 
   /** Raw evaluated and flattened flow display items. */
   readonly displayItems = computed<FlowDisplayItem[]>(() => {
     const nodes = this.flowNodes();
     if (!nodes.length) return [];
-    return this.parser.flatten(this.parser.evaluate(nodes, this.simValues()));
+    return this.parser.flatten(this.parser.evaluate(nodes, this.allInputValues()));
   });
 
   readonly resolvedBranches = computed(() =>
@@ -207,6 +469,70 @@ export class FunctionDetailComponent implements OnDestroy {
     return { raw, substituted, value, isThrow };
   });
 
+  // ── Post-run state snapshot ──────────────────────────────────────────────
+
+  /**
+   * Scan every code statement in the executed path for `this.propName = expr`
+   * assignments and evaluate what the property would be after the run.
+   * Only reports properties listed in touchedProperties for the method.
+   */
+  readonly mutatedProps = computed<MutatedProp[]>(() => {
+    const items = this.displayItems();
+    const path  = this.executionPath();
+    const comp  = this.comp();
+    if (!path.length || !comp) return [];
+
+    // Pattern: `this.propName = expr` or `this.propName.set(expr)` (signal setter)
+    const assignRe  = /\bthis\.(\w+)\s*=(?!=)(.+?)(?:;|$)/;
+    const setterRe  = /\bthis\.(\w+)\.set\((.+?)\)\s*;?\s*$/;
+    const updateRe  = /\bthis\.(\w+)\.update\(/;          // too complex to eval, just flag it
+
+    // Last-write wins: collect final value per property name
+    const lastWrite = new Map<string, { expr: string; kind: 'assign' | 'set' | 'update' }>();
+
+    for (const idx of path) {
+      const item = items[idx];
+      if (item.type !== 'code') continue;
+      const text = item.text ?? '';
+
+      const sa = assignRe.exec(text);
+      if (sa) { lastWrite.set(sa[1], { expr: sa[2].trim(), kind: 'assign' }); continue; }
+
+      const ss = setterRe.exec(text);
+      if (ss) { lastWrite.set(ss[1], { expr: ss[2].trim(), kind: 'set' }); continue; }
+
+      if (updateRe.test(text)) {
+        const um = /\bthis\.(\w+)\.update\(/.exec(text);
+        if (um) lastWrite.set(um[1], { expr: '(computed via .update())', kind: 'update' });
+      }
+    }
+
+    if (lastWrite.size === 0) return [];
+
+    const results: MutatedProp[] = [];
+    for (const [propName, { expr, kind }] of lastWrite) {
+      const prop = comp.properties.find(p => p.name === propName);
+      const colors = PROP_COLORS[prop?.kind ?? 'regular'] ?? PROP_COLORS['regular'];
+      let value: string | null = null;
+      let substituted = expr;
+      if (kind !== 'update') {
+        const ev = this.evalExpression(expr);
+        value = ev.value;
+        substituted = ev.substituted;
+      }
+      results.push({
+        name: propName,
+        kind: prop?.kind ?? 'regular',
+        bg: colors.bg,
+        text: colors.text,
+        assignExpr: expr,
+        value,
+        substituted,
+      });
+    }
+    return results;
+  });
+
   // ── Timer ─────────────────────────────────────────────────────────────────
 
   private animTimer: ReturnType<typeof setTimeout> | null = null;
@@ -279,19 +605,36 @@ export class FunctionDetailComponent implements OnDestroy {
     }, 60);
   }
 
-  /** Substitute sim-values into an expression and try to evaluate it. */
+  /** Substitute param values, sim-values, and mock returns into an expression and try to evaluate it. */
   private evalExpression(expr: string): { substituted: string; value: string | null } {
     let sub = expr;
-    const vals = this.simValues();
+    const vals = this.allInputValues();
     const comp = this.comp();
 
+    // Substitute parameter values first (bare names, not this.xxx)
+    for (const param of this.parsedParams()) {
+      const raw = vals[param.name];
+      if (!raw?.trim()) continue;
+      const jsonVal = JSON.stringify(this.parser.parseValue(raw));
+      sub = sub.replace(new RegExp(`\\b${param.name}\\b`, 'g'), jsonVal);
+    }
+
     if (comp) {
+      // Substitute property values
       for (const prop of comp.properties) {
         const raw = vals[prop.name];
         if (!raw?.trim()) continue;
         const jsonVal = JSON.stringify(this.parser.parseValue(raw));
-        sub = sub.replace(new RegExp(`\\bthis\\.${prop.name}\\s*\\(\\)`, 'g'), jsonVal);
-        sub = sub.replace(new RegExp(`\\bthis\\.${prop.name}(?![\\w(])`, 'g'), jsonVal);
+        sub = sub.replace(new RegExp(`\\bthis\.${prop.name}\\s*\\(\\)`, 'g'), jsonVal);
+        sub = sub.replace(new RegExp(`\\bthis\.${prop.name}(?![\\w(])`, 'g'), jsonVal);
+      }
+      // Substitute mocked method return values (any-arg calls)
+      const mockReturns = this.state.mockReturnValues();
+      for (const method of comp.methods) {
+        const raw = mockReturns[method.name];
+        if (!raw?.trim()) continue;
+        const jsonVal = JSON.stringify(this.parser.parseValue(raw));
+        sub = sub.replace(new RegExp(`\\bthis\.${method.name}\\s*\\([^)]*\\)`, 'g'), jsonVal);
       }
     }
 
@@ -328,11 +671,236 @@ export class FunctionDetailComponent implements OnDestroy {
     return t.length > 1500 ? t.slice(0, 1500) + '\n// … (truncated)' : t;
   }
 
+  /** Highlighted method body for the Overview tab. */
+  readonly highlightedBody = computed<SafeHtml>(() =>
+    this.sanitizer.bypassSecurityTrustHtml(this.highlightTypeScript(this.getFormattedBody()))
+  );
+
+  /**
+   * Minimal TypeScript syntax highlighter using a char-by-char scanner.
+   * Returns an HTML string with <span class="syn-*"> wrapping.
+   */
+  highlightTypeScript(code: string): string {
+    const KW = new Set([
+      'if','else','return','throw','try','catch','finally',
+      'const','let','var','for','while','do','switch','case','default',
+      'break','continue','new','typeof','instanceof','async','await',
+      'function','class','import','export','from','of','in',
+      'true','false','null','undefined',
+    ]);
+
+    const OPERATORS = ['===','!==','=>','==','!=','>=','<=','&&','||','??','?.'];
+
+    function esc(s: string): string {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function span(cls: string, content: string): string {
+      return `<span class="${cls}">${content}</span>`;
+    }
+
+    let out = '';
+    let i = 0;
+    const len = code.length;
+
+    while (i < len) {
+      const ch = code[i];
+
+      // ── Line comment
+      if (ch === '/' && code[i + 1] === '/') {
+        let end = i;
+        while (end < len && code[end] !== '\n') end++;
+        out += span('syn-cmt', esc(code.slice(i, end)));
+        i = end;
+        continue;
+      }
+
+      // ── Block comment
+      if (ch === '/' && code[i + 1] === '*') {
+        let end = i + 2;
+        while (end < len - 1 && !(code[end] === '*' && code[end + 1] === '/')) end++;
+        end += 2; // include closing */
+        out += span('syn-cmt', esc(code.slice(i, end)));
+        i = end;
+        continue;
+      }
+
+      // ── String / template literal
+      if (ch === '"' || ch === "'" || ch === '`') {
+        const q = ch;
+        let j = i + 1;
+        let raw = q;
+        if (q === '`') {
+          // template literal — scan carefully, handle ${...}
+          while (j < len && code[j] !== '`') {
+            if (code[j] === '\\') { raw += code[j] + (code[j + 1] ?? ''); j += 2; continue; }
+            if (code[j] === '$' && code[j + 1] === '{') {
+              raw += '${'; j += 2;
+              let d = 1;
+              while (j < len && d > 0) {
+                if (code[j] === '{') d++;
+                else if (code[j] === '}') d--;
+                raw += code[j]; j++;
+              }
+              continue;
+            }
+            raw += code[j]; j++;
+          }
+          raw += code[j] ?? ''; j++;
+        } else {
+          while (j < len && code[j] !== q) {
+            if (code[j] === '\\') { raw += code[j] + (code[j + 1] ?? ''); j += 2; continue; }
+            raw += code[j]; j++;
+          }
+          raw += code[j] ?? ''; j++;
+        }
+        out += span('syn-str', esc(raw));
+        i = j;
+        continue;
+      }
+
+      // ── Number
+      if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(code[i + 1] ?? ''))) {
+        let j = i;
+        while (j < len && /[0-9a-fA-FxX_.]/.test(code[j])) j++;
+        out += span('syn-num', esc(code.slice(i, j)));
+        i = j;
+        continue;
+      }
+
+      // ── Operators (multi-char first)
+      let matched = false;
+      for (const op of OPERATORS) {
+        if (code.startsWith(op, i)) {
+          out += span('syn-op', esc(op));
+          i += op.length;
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
+
+      // ── Identifier (keyword / function call / this)
+      if (/[a-zA-Z_$]/.test(ch)) {
+        let j = i;
+        while (j < len && /[\w$]/.test(code[j])) j++;
+        const word = code.slice(i, j);
+
+        // skip whitespace to detect function call
+        let k = j;
+        while (k < len && (code[k] === ' ' || code[k] === '\t')) k++;
+        const isFnCall = code[k] === '(';
+
+        if (word === 'this') {
+          out += span('syn-this', 'this');
+        } else if (KW.has(word)) {
+          out += span('syn-kw', esc(word));
+        } else if (isFnCall) {
+          out += span('syn-fn', esc(word));
+        } else {
+          out += esc(word);
+        }
+        i = j;
+        continue;
+      }
+
+      // ── Everything else (punctuation, whitespace, newlines)
+      out += esc(ch);
+      i++;
+    }
+
+    return out;
+  }
+
   onSimInput(name: string, event: Event): void {
     this.state.setSimValue(name, (event.target as HTMLInputElement).value);
   }
 
-  clearSimValues(): void { this.state.clearSimValues(); }
+  onSimCheckbox(name: string, event: Event): void {
+    const checked = (event.target as HTMLInputElement).checked;
+    this.state.setSimValue(name, checked ? 'true' : 'false');
+  }
+
+  onParamInput(name: string, event: Event): void {
+    this.state.setParamValue(name, (event.target as HTMLInputElement).value);
+  }
+
+  onParamCheckbox(name: string, event: Event): void {
+    const checked = (event.target as HTMLInputElement).checked;
+    this.state.setParamValue(name, checked ? 'true' : 'false');
+  }
+
+  onMockReturnInput(methodName: string, event: Event): void {
+    this.state.setMockReturn(methodName, (event.target as HTMLInputElement).value);
+  }
+
+  getInputType(prop: ClassProperty): 'checkbox' | 'number' | 'text' {
+    return inputTypeFromString(prop.dataType ?? '');
+  }
+
+  getParamInputType(param: ParsedParam): 'checkbox' | 'number' | 'text' {
+    return inputTypeFromString(param.type);
+  }
+
+  getCheckedValue(name: string): boolean {
+    const v = this.simValues()[name] ?? '';
+    return v === 'true' || v === '1';
+  }
+
+  getParamCheckedValue(name: string): boolean {
+    const v = this.state.paramValues()[name] ?? '';
+    return v === 'true' || v === '1';
+  }
+
+  /** Get the stored value for an object param field (keyed as "paramName.fieldName"). */
+  getParamFieldValue(paramName: string, fieldName: string): string {
+    return this.state.paramValues()[`${paramName}.${fieldName}`] ?? '';
+  }
+
+  getParamFieldChecked(paramName: string, fieldName: string): boolean {
+    const v = this.getParamFieldValue(paramName, fieldName);
+    return v === 'true' || v === '1';
+  }
+
+  onParamFieldInput(paramName: string, fieldName: string, event: Event): void {
+    this.state.setParamValue(`${paramName}.${fieldName}`, (event.target as HTMLInputElement).value);
+  }
+
+  onParamFieldCheckbox(paramName: string, fieldName: string, event: Event): void {
+    const checked = (event.target as HTMLInputElement).checked;
+    this.state.setParamValue(`${paramName}.${fieldName}`, checked ? 'true' : 'false');
+  }
+
+  /** Get the stored value for an object property field (keyed as "propName.fieldName"). */
+  getSimFieldValue(propName: string, fieldName: string): string {
+    return this.state.simulationValues()[`${propName}.${fieldName}`] ?? '';
+  }
+
+  getSimFieldChecked(propName: string, fieldName: string): boolean {
+    const v = this.getSimFieldValue(propName, fieldName);
+    return v === 'true' || v === '1';
+  }
+
+  onSimFieldInput(propName: string, fieldName: string, event: Event): void {
+    this.state.setSimValue(`${propName}.${fieldName}`, (event.target as HTMLInputElement).value);
+  }
+
+  onSimFieldCheckbox(propName: string, fieldName: string, event: Event): void {
+    const checked = (event.target as HTMLInputElement).checked;
+    this.state.setSimValue(`${propName}.${fieldName}`, checked ? 'true' : 'false');
+  }
+
+  /** Whether a class property has an object type with known inline fields. */
+  getPropFields(prop: ClassProperty): ObjectField[] {
+    if (!prop.dataType || !isObjectType(prop.dataType)) return [];
+    return parseInlineObjectType(prop.dataType);
+  }
+
+  clearSimValues(): void {
+    this.state.clearParamValues();
+    this.state.clearSimValues();
+    this.state.clearMockReturns();
+  }
 
   indentPx(depth: number): number { return depth * 20; }
 

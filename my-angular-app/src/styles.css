@@ -33,3 +33,12 @@ body {
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb { background: rgba(99, 102, 241, 0.3); border-radius: 3px; }
 *::-webkit-scrollbar-thumb:hover { background: rgba(99, 102, 241, 0.5); }
+
+/* ── TypeScript syntax highlighting ──────────────────────────────────────── */
+.syn-kw   { color: #7c6af7; }                        /* keywords — purple/indigo */
+.syn-str  { color: #86efac; }                        /* strings — green */
+.syn-num  { color: #fb923c; }                        /* numbers — orange */
+.syn-cmt  { color: #6b7280; font-style: italic; }    /* comments — gray italic */
+.syn-fn   { color: #60a5fa; }                        /* function calls — blue */
+.syn-op   { color: #e2a4f7; }                        /* operators — light purple */
+.syn-this { color: #f472b6; }                        /* this keyword — pink */

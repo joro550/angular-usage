@@ -32,6 +32,7 @@ interface Tok {
 export interface ParsedProp {
   name: string;
   kind: PropertyKind;
+  dataType?: string;
 }
 
 export interface ParsedMethod {
@@ -272,6 +273,29 @@ class Parser {
       else if (v === '}') { if (d > 0) d--; else return; }
       this.advance();
     }
+  }
+
+  /**
+   * Read and return the type annotation string starting at `:`.
+   * Like skipTypeAnnotation() but captures and returns the type text.
+   */
+  readTypeAnnotation(): string {
+    if (!this.is(':')) return '';
+    this.advance(); // ':'
+    let d = 0;
+    const parts: string[] = [];
+    while (this.peek().k !== 'eof') {
+      const v = this.peek().v;
+      if (d === 0 && (v === '=' || v === ';' || v === ')' || v === ',' || v === '{')) break;
+      if (v === '(' || v === '[') d++;
+      else if (v === ')' || v === ']') { if (d > 0) d--; else break; }
+      else if (v === '<') d++;
+      else if (v === '>') { if (d > 0) d--; }
+      else if (v === '{') d++;
+      else if (v === '}') { if (d > 0) d--; else break; }
+      parts.push(this.advance().v);
+    }
+    return parts.join(' ');
   }
 
   /** Skip a decorator `@Name(…)`. Expects current token to be `@`. */
@@ -521,12 +545,12 @@ class Parser {
       } else {
         // ── Property or arrow-function class field ────────────────────────
         this.eat('?'); this.eat('!'); // optional / non-null
-        this.skipTypeAnnotation();   // : Type
+        const dataType = this.readTypeAnnotation();   // : Type
 
         if (!this.is('=')) {
           // Declaration-only, e.g. `private foo: string;`
           this.eat(';');
-          properties.push({ name, kind: 'regular' });
+          properties.push({ name, kind: 'regular', dataType: dataType || undefined });
           continue;
         }
         this.advance(); // '='
@@ -536,7 +560,7 @@ class Parser {
         if (isArrowFn) {
           methods.push({ name, params: '', isAsync, isLifecycle: LIFECYCLE.has(name), body });
         } else {
-          properties.push({ name, kind });
+          properties.push({ name, kind, dataType: dataType || undefined });
         }
       }
     }
@@ -557,7 +581,7 @@ class Parser {
       if (this.isIdent()) {
         const name = this.advance().v;
         this.eat('?'); this.eat('!');
-        this.skipTypeAnnotation();
+        const dataType = this.readTypeAnnotation();
         if (this.eat('=')) {
           // Default value — skip to `,` or `)`
           let d = 0;
@@ -569,7 +593,7 @@ class Parser {
             this.advance();
           }
         }
-        if (hasMod) props.push({ name, kind: 'inject' });
+        if (hasMod) props.push({ name, kind: 'inject', dataType: dataType || undefined });
       }
       this.eat(',');
     }

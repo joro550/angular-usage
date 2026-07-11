@@ -14,15 +14,22 @@ export interface SwitchCase {
   body: FlowNode[];
 }
 
+export interface TryCatchClause {
+  kind: 'try' | 'catch' | 'finally';
+  param?: string;  // catch parameter, e.g. "error" from catch(error)
+  body: FlowNode[];
+}
+
 export interface FlowNode {
   id: string;
-  nodeKind: 'code' | 'if' | 'switch' | 'return' | 'throw' | 'loop';
+  nodeKind: 'code' | 'if' | 'switch' | 'return' | 'throw' | 'loop' | 'try-catch';
   text?: string;         // code / return / throw text
   branches?: FlowBranch[]; // if chain
   switchExpr?: string;
   cases?: SwitchCase[];
   loopHeader?: string;
   loopBody?: FlowNode[];
+  tryCatchClauses?: TryCatchClause[];
 }
 
 // ─── Evaluated types (runtime-annotated) ─────────────────────────────────────
@@ -38,6 +45,12 @@ export interface EvaluatedCase extends SwitchCase {
   taken: boolean;
 }
 
+export interface EvaluatedTryCatchClause {
+  kind: 'try' | 'catch' | 'finally';
+  param?: string;
+  body: EvaluatedNode[];
+}
+
 export interface EvaluatedNode {
   id: string;
   nodeKind: FlowNode['nodeKind'];
@@ -49,13 +62,15 @@ export interface EvaluatedNode {
   takenBranchIdx: number | null;
   takenCaseIdx: number | null;
   subNodes?: EvaluatedNode[]; // nodes within the taken branch/case
+  evaledTryCatchClauses?: EvaluatedTryCatchClause[];
 }
 
 // ─── Flat display items (tree flattened for simple rendering) ─────────────────
 
 export type FlowItemType =
   | 'code' | 'if-head' | 'switch-head' | 'switch-case'
-  | 'return' | 'throw' | 'loop' | 'separator';
+  | 'return' | 'throw' | 'loop' | 'separator'
+  | 'try-head' | 'catch-head' | 'finally-head';
 
 export interface FlowDisplayItem {
   type: FlowItemType;
@@ -68,6 +83,8 @@ export interface FlowDisplayItem {
   isElse?: boolean;
   caseLabel?: string;
   loopHeader?: string;
+  clauseKind?: 'try' | 'catch' | 'finally';
+  catchParam?: string;
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -150,6 +167,21 @@ export class FlowParserService {
         case 'loop':
           out.push({ type: 'loop', depth, loopHeader: node.loopHeader, text: node.loopHeader });
           break;
+
+        case 'try-catch': {
+          const clauses = node.evaledTryCatchClauses ?? [];
+          for (const clause of clauses) {
+            out.push({
+              type: clause.kind === 'try' ? 'try-head' : clause.kind === 'catch' ? 'catch-head' : 'finally-head',
+              depth,
+              clauseKind: clause.kind,
+              catchParam: clause.param,
+              text: clause.kind === 'catch' ? `catch (${clause.param ?? ''})` : clause.kind,
+            });
+            out.push(...this.flatten(clause.body, depth + 1));
+          }
+          break;
+        }
       }
     }
     return out;
@@ -170,8 +202,77 @@ export class FlowParserService {
     return out;
   }
 
+  /**
+   * Like extractConditionProps but collects bare identifiers (parameter names)
+   * that appear in branching expressions, i.e. NOT prefixed with `this.`.
+   * The caller passes the known parameter names so we only flag real params.
+   */
+  extractParamConditionNames(nodes: FlowNode[], paramNames?: Set<string>): Set<string> {
+    const out = new Set<string>();
+    this.gatherConditionParams(nodes, out);
+    return out;
+  }
+
+  private gatherConditionParams(nodes: FlowNode[], out: Set<string>): void {
+    for (const node of nodes) {
+      if (node.nodeKind === 'try-catch') {
+        for (const clause of node.tryCatchClauses ?? []) {
+          this.gatherConditionParams(clause.body, out);
+        }
+        continue;
+      }
+      switch (node.nodeKind) {
+        case 'if':
+          for (const branch of node.branches ?? []) {
+            if (branch.condition) this.bareIdentsInExpr(branch.condition, out);
+            this.gatherConditionParams(branch.body, out);
+          }
+          break;
+        case 'switch':
+          if (node.switchExpr) this.bareIdentsInExpr(node.switchExpr, out);
+          for (const c of node.cases ?? []) this.gatherConditionParams(c.body, out);
+          break;
+        case 'loop':
+          if (node.loopHeader) this.bareIdentsInExpr(node.loopHeader, out);
+          this.gatherConditionParams(node.loopBody ?? [], out);
+          break;
+        case 'code':
+        case 'return':
+        case 'throw': {
+          const text = node.text ?? '';
+          const qi = this.findTernaryQuestion(text);
+          if (qi >= 0) this.bareIdentsInExpr(text.slice(0, qi), out);
+          break;
+        }
+      }
+    }
+  }
+
+  /** Collect bare identifiers (not preceded by `.` or `this.`) from an expression. */
+  private bareIdentsInExpr(expr: string, out: Set<string>): void {
+    // Match word-boundary identifiers that are NOT preceded by a dot
+    const pat = /(?<![.\w])(\b[a-zA-Z_$][\w$]*)(?!\s*:)/g;
+    let m: RegExpExecArray | null;
+    // Skip keywords that aren't identifiers
+    const SKIP = new Set(['if','else','return','throw','true','false','null','undefined',
+      'typeof','instanceof','new','void','in','of','for','while','do','switch','case',
+      'default','break','continue','const','let','var','async','await','this','function']);
+    while ((m = pat.exec(expr)) !== null) {
+      const id = m[1];
+      if (!SKIP.has(id) && !expr.slice(0, m.index).trimEnd().endsWith('.')) {
+        out.add(id);
+      }
+    }
+  }
+
   private gatherConditionProps(nodes: FlowNode[], out: Set<string>): void {
     for (const node of nodes) {
+      if (node.nodeKind === 'try-catch') {
+        for (const clause of node.tryCatchClauses ?? []) {
+          this.gatherConditionProps(clause.body, out);
+        }
+        continue;
+      }
       switch (node.nodeKind) {
         case 'if':
           for (const branch of node.branches ?? []) {
@@ -300,6 +401,11 @@ export class FlowParserService {
         const e = this.stmtEnd(src, i, to);
         nodes.push({ id: this.uid(), nodeKind: 'throw', text: src.slice(i, e + 1).trim() });
         i = e + 1; continue;
+      }
+      if (this.kw(src, i, 'try')) {
+        flushCode();
+        const r = this.parseTryCatch(src, i, to);
+        nodes.push(r.node); i = r.end; continue;
       }
       if (this.kw(src, i, 'for') || this.kw(src, i, 'while') || this.kw(src, i, 'do')) {
         flushCode();
@@ -435,6 +541,57 @@ export class FlowParserService {
     return { node: { id: this.uid(), nodeKind: 'switch', switchExpr, cases }, end: i };
   }
 
+  private parseTryCatch(src: string, pos: number, _limit: number): { node: FlowNode; end: number } {
+    const clauses: TryCatchClause[] = [];
+    let i = pos + 3; // skip 'try'
+    i = this.skipWS(src, i);
+
+    // try body
+    if (src[i] === '{') {
+      const e = this.closeBrace(src, i);
+      const inner = src.slice(i + 1, e);
+      clauses.push({ kind: 'try', body: this.parseBlock(inner, 0, inner.length).nodes });
+      i = e + 1;
+    }
+
+    i = this.skipWS(src, i);
+
+    // catch clause
+    if (this.kw(src, i, 'catch')) {
+      i += 5;
+      i = this.skipWS(src, i);
+      let param = '';
+      if (src[i] === '(') {
+        const { content, end } = this.extractParen(src, i);
+        param = content.trim();
+        i = end + 1;
+      }
+      i = this.skipWS(src, i);
+      if (src[i] === '{') {
+        const e = this.closeBrace(src, i);
+        const inner = src.slice(i + 1, e);
+        clauses.push({ kind: 'catch', param, body: this.parseBlock(inner, 0, inner.length).nodes });
+        i = e + 1;
+      }
+    }
+
+    i = this.skipWS(src, i);
+
+    // finally clause
+    if (this.kw(src, i, 'finally')) {
+      i += 7;
+      i = this.skipWS(src, i);
+      if (src[i] === '{') {
+        const e = this.closeBrace(src, i);
+        const inner = src.slice(i + 1, e);
+        clauses.push({ kind: 'finally', body: this.parseBlock(inner, 0, inner.length).nodes });
+        i = e + 1;
+      }
+    }
+
+    return { node: { id: this.uid(), nodeKind: 'try-catch', tryCatchClauses: clauses }, end: i };
+  }
+
   private parseLoop(src: string, pos: number, _limit: number): { node: FlowNode; end: number } {
     let i = pos;
     const isDo = this.kw(src, i, 'do');
@@ -477,6 +634,13 @@ export class FlowParserService {
   private evalNode(node: FlowNode, values: Map<string, unknown>): EvaluatedNode {
     if (node.nodeKind === 'if') return this.evalIf(node, values);
     if (node.nodeKind === 'switch') return this.evalSwitch(node, values);
+    if (node.nodeKind === 'try-catch') {
+      const evaledTryCatchClauses: EvaluatedTryCatchClause[] = (node.tryCatchClauses ?? []).map(clause => ({
+        ...clause,
+        body: clause.body.map(n => this.evalNode(n, values)),
+      }));
+      return { id: node.id, nodeKind: 'try-catch', evaledTryCatchClauses, takenBranchIdx: null, takenCaseIdx: null };
+    }
     return { id: node.id, nodeKind: node.nodeKind, text: node.text, loopHeader: node.loopHeader, takenBranchIdx: null, takenCaseIdx: null };
   }
 
@@ -560,10 +724,14 @@ export class FlowParserService {
 
     for (const [name, value] of values) {
       const json = JSON.stringify(value);
-      // Replace this.name() — signal/model call
-      sub = sub.replace(new RegExp(`\\bthis\\.${name}\\s*\\(\\)`, 'g'), json);
+      // Replace this.name() — signal/model/zero-arg call
+      sub = sub.replace(new RegExp(`\\bthis\.${name}\\s*\\(\\)`, 'g'), json);
+      // Replace this.name(any args) — mocked method calls with arguments
+      sub = sub.replace(new RegExp(`\\bthis\.${name}\\s*\\([^)]*\\)`, 'g'), json);
       // Replace this.name (not followed by word char or open paren)
-      sub = sub.replace(new RegExp(`\\bthis\\.${name}(?![\\w(])`, 'g'), json);
+      sub = sub.replace(new RegExp(`\\bthis\.${name}(?![\\w(])`, 'g'), json);
+      // Replace bare param name (not preceded by a dot, i.e. not this.xxx)
+      sub = sub.replace(new RegExp(`(?<![.\\w])\\b${name}\\b(?![\\w(])`, 'g'), json);
     }
 
     // If unresolved this.xxx remain, we can't evaluate
