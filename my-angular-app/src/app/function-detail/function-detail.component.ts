@@ -28,6 +28,8 @@ export interface ObjectField {
   name: string;
   type: string;
   inputKind: 'checkbox' | 'number' | 'text';
+  /** Whether this specific field appears in a branch condition (e.g., "param.field > 5"). */
+  inCondition?: boolean;
 }
 
 /** A single parsed parameter with its name and resolved TypeScript type. */
@@ -401,10 +403,21 @@ export class FunctionDetailComponent implements OnDestroy {
     const raw = this.method().params?.trim();
     if (!raw) return [];
     const paramCondNames = this.parser.extractParamConditionNames(this.flowNodes());
+    const allAccesses = this.parser.extractAllConditionAccesses(this.flowNodes());
     return parseParamString(raw).map(p => {
       const obj = isObjectType(p.type);
       const fields = obj ? parseInlineObjectType(p.type) : [];
-      return { ...p, inCondition: paramCondNames.has(p.name), isObject: obj, fields };
+      // Mark fields as in condition if "param.field" appears in conditions
+      const enhancedFields = fields.map(f => ({
+        ...f,
+        inCondition: allAccesses.has(`${p.name}.${f.name}`),
+      }));
+      return { 
+        ...p, 
+        inCondition: paramCondNames.has(p.name) || enhancedFields.some(f => f.inCondition), 
+        isObject: obj, 
+        fields: enhancedFields 
+      };
     });
   });
 
@@ -1113,7 +1126,13 @@ export class FunctionDetailComponent implements OnDestroy {
   /** Whether a class property has an object type with known inline fields. */
   getPropFields(prop: ClassProperty): ObjectField[] {
     if (!prop.dataType || !isObjectType(prop.dataType)) return [];
-    return parseInlineObjectType(prop.dataType);
+    const fields = parseInlineObjectType(prop.dataType);
+    const allAccesses = this.parser.extractAllConditionAccesses(this.flowNodes());
+    // Mark fields as in condition if "prop.field" appears in conditions
+    return fields.map(f => ({
+      ...f,
+      inCondition: allAccesses.has(`${prop.name}.${f.name}`),
+    }));
   }
 
   clearSimValues(): void {

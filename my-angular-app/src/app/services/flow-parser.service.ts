@@ -305,6 +305,17 @@ export class FlowParserService {
     return out;
   }
 
+  /**
+   * Extract ALL property accesses in conditions, including nested ones.
+   * Returns both `this.prop` accesses AND `param.nestedProp` accesses.
+   * Format: "prop" for direct accesses, "param.field" for nested.
+   */
+  extractAllConditionAccesses(nodes: FlowNode[]): Set<string> {
+    const out = new Set<string>();
+    this.gatherAllConditionAccesses(nodes, out);
+    return out;
+  }
+
   private gatherConditionParams(nodes: FlowNode[], out: Set<string>): void {
     for (const node of nodes) {
       if (node.nodeKind === 'try-catch') {
@@ -340,6 +351,41 @@ export class FlowParserService {
     }
   }
 
+  private gatherAllConditionAccesses(nodes: FlowNode[], out: Set<string>): void {
+    for (const node of nodes) {
+      if (node.nodeKind === 'try-catch') {
+        for (const clause of node.tryCatchClauses ?? []) {
+          this.gatherAllConditionAccesses(clause.body, out);
+        }
+        continue;
+      }
+      switch (node.nodeKind) {
+        case 'if':
+          for (const branch of node.branches ?? []) {
+            if (branch.condition) this.allAccessesInExpr(branch.condition, out);
+            this.gatherAllConditionAccesses(branch.body, out);
+          }
+          break;
+        case 'switch':
+          if (node.switchExpr) this.allAccessesInExpr(node.switchExpr, out);
+          for (const c of node.cases ?? []) this.gatherAllConditionAccesses(c.body, out);
+          break;
+        case 'loop':
+          if (node.loopHeader) this.allAccessesInExpr(node.loopHeader, out);
+          this.gatherAllConditionAccesses(node.loopBody ?? [], out);
+          break;
+        case 'code':
+        case 'return':
+        case 'throw': {
+          const text = node.text ?? '';
+          const qi = this.findTernaryQuestion(text);
+          if (qi >= 0) this.allAccessesInExpr(text.slice(0, qi), out);
+          break;
+        }
+      }
+    }
+  }
+
   /** Collect bare identifiers (not preceded by `.` or `this.`) from an expression. */
   private bareIdentsInExpr(expr: string, out: Set<string>): void {
     // Match word-boundary identifiers that are NOT preceded by a dot
@@ -353,6 +399,30 @@ export class FlowParserService {
       const id = m[1];
       if (!SKIP.has(id) && !expr.slice(0, m.index).trimEnd().endsWith('.')) {
         out.add(id);
+      }
+    }
+  }
+
+  /**
+   * Collect ALL property accesses from an expression:
+   * - `this.prop` or `this.prop()` → "prop"
+   * - `param.field` → "param.field"
+   * - nested: `data.user.name` → "data.user.name"
+   */
+  private allAccessesInExpr(expr: string, out: Set<string>): void {
+    // First, handle `this.xxx` patterns
+    this.propsInExpr(expr, out);
+
+    // Now handle bare identifier property chains: `identifier.prop1.prop2...`
+    // Match: word -> . -> word (repeated)
+    const propChainPat = /\b([a-zA-Z_$][\w$]*)(\.([a-zA-Z_$][\w$]*))+/g;
+    let m: RegExpExecArray | null;
+    while ((m = propChainPat.exec(expr)) !== null) {
+      const fullChain = m[0]; // e.g., "data.property" or "user.profile.name"
+      // Check it's not preceded by 'this.' (already handled above)
+      const before = expr.slice(Math.max(0, m.index - 5), m.index);
+      if (!before.endsWith('this.')) {
+        out.add(fullChain);
       }
     }
   }
