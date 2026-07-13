@@ -463,6 +463,84 @@ export class FunctionDetailComponent implements OnDestroy {
   readonly branchingProps  = computed<PropInfo[]>(() => this.simProps().filter(p => p.inCondition));
   readonly accessOnlyProps = computed<PropInfo[]>(() => this.simProps().filter(p => !p.inCondition));
 
+  // ── Method parameters and local variables ───────────────────────────────
+
+  /** Names of formal parameters declared in the method signature. */
+  readonly methodParamNames = computed<string[]>(() =>
+    this.parser.parseMethodParamNames(this.method().params),
+  );
+
+  /** const / let / var declarations found in the method body. */
+  readonly localDecls = computed<{ name: string; initExpr: string }[]>(() => {
+    const body = this.method().body;
+    return body ? this.parser.extractLocalDeclarations(body) : [];
+  });
+
+  /**
+   * Bare identifiers (NOT `this.xxx`) that appear in branching conditions.
+   * These are candidates for mocking — e.g. `result` in `if (result.ok)`
+   * where `result` came from a local `const result = await this.api.get()`.
+   */
+  readonly bareConditionIdents = computed<Set<string>>(() =>
+    this.parser.extractParamConditionNames(this.flowNodes()),
+  );
+
+  /**
+   * Combined list of method params + local vars that are worth offering as
+   * mock inputs. Sorted so condition-relevant items appear first.
+   */
+  readonly mockableLocals = computed<{
+    name: string;
+    initExpr?: string;
+    isParam: boolean;
+    inCondition: boolean;
+  }[]>(() => {
+    const paramNames = new Set(this.methodParamNames());
+    const condIdents  = this.bareConditionIdents();
+    const classProps  = new Set((this.comp()?.properties ?? []).map(p => p.name));
+    const seen = new Set<string>();
+    const result: { name: string; initExpr?: string; isParam: boolean; inCondition: boolean }[] = [];
+
+    // Method parameters
+    for (const name of paramNames) {
+      if (seen.has(name) || classProps.has(name)) continue;
+      seen.add(name);
+      result.push({ name, isParam: true, inCondition: condIdents.has(name) });
+    }
+    // Local variable declarations
+    for (const decl of this.localDecls()) {
+      if (seen.has(decl.name) || classProps.has(decl.name)) continue;
+      seen.add(decl.name);
+      result.push({ name: decl.name, initExpr: decl.initExpr, isParam: false, inCondition: condIdents.has(decl.name) });
+    }
+    return result.sort((a, b) => (b.inCondition ? 1 : 0) - (a.inCondition ? 1 : 0));
+  });
+
+  // ── Result detail panel ───────────────────────────────────────────────────
+
+  /** Toggle the expanded value-snapshot panel on the result card. */
+  readonly showResultDetail = signal(false);
+
+  /**
+   * Snapshot of every mocked value in play at the end of the simulation.
+   * Used to display the full class / local state when the user clicks the result.
+   */
+  readonly allValueSnapshot = computed<{ name: string; raw: string; kind: 'prop' | 'param' | 'local' }[]>(() => {
+    const vals = this.simValues();
+    const comp = this.comp();
+    const out: { name: string; raw: string; kind: 'prop' | 'param' | 'local' }[] = [];
+
+    for (const prop of comp?.properties ?? []) {
+      const v = vals[prop.name];
+      if (v?.trim()) out.push({ name: prop.name, raw: v.trim(), kind: 'prop' });
+    }
+    for (const local of this.mockableLocals()) {
+      const v = vals[local.name];
+      if (v?.trim()) out.push({ name: local.name, raw: v.trim(), kind: local.isParam ? 'param' : 'local' });
+    }
+    return out;
+  });
+
   readonly hasSimValues = computed(() =>
     Object.values(this.allInputValues()).some(v => v.trim() !== ''),
   );
@@ -629,6 +707,12 @@ export class FunctionDetailComponent implements OnDestroy {
   private animTimer: ReturnType<typeof setTimeout> | null = null;
 
   ngOnDestroy(): void { this.resetPlay(); }
+
+  /** Call when navigating to a new method so stale UI state is cleared. */
+  private resetUiState(): void {
+    this.resetPlay();
+    this.showResultDetail.set(false);
+  }
 
   // ── Play controls ─────────────────────────────────────────────────────────
 

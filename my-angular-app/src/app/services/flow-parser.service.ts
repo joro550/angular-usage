@@ -423,6 +423,44 @@ export class FlowParserService {
     while ((m = pat.exec(expr)) !== null) out.add(m[1]);
   }
 
+  /**
+   * Parse a raw params string (e.g. `"userId: string, config = {}"`)
+   * and return the bare parameter names in declaration order.
+   */
+  parseMethodParamNames(paramsStr: string): string[] {
+    if (!paramsStr.trim()) return [];
+    const names: string[] = [];
+    for (const part of paramsStr.split(',')) {
+      const m = part.trim().match(/^(\.\.\.)?([a-zA-Z_$][\w$]*)/);
+      if (m) names.push(m[2]);
+    }
+    return names;
+  }
+
+  /**
+   * Scan a method body for top-level `const / let / var name = expr` declarations.
+   * These become mock-able in the simulation panel so users can supply return
+   * values for calls like `const data = this.service.fetch()` without needing
+   * to mock the service itself.
+   *
+   * Uses a permissive regex — good enough for Angular method bodies.
+   */
+  extractLocalDeclarations(body: string): { name: string; initExpr: string }[] {
+    const results: { name: string; initExpr: string }[] = [];
+    const seen = new Set<string>();
+    // Match const/let/var at statement level (newline or ; before them)
+    const pat = /\b(?:const|let|var)\s+([a-zA-Z_$][\w$]*)\s*=\s*([^;={\n][^;\n]*?)\s*(?:;|$)/gm;
+    let m: RegExpExecArray | null;
+    while ((m = pat.exec(body)) !== null) {
+      const name = m[1];
+      if (!seen.has(name)) {
+        seen.add(name);
+        results.push({ name, initExpr: m[2].trim() });
+      }
+    }
+    return results;
+  }
+
   parseValue(raw: string): unknown {
     const t = raw.trim();
     if (t === '' || t === 'undefined') return undefined;

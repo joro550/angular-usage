@@ -519,6 +519,61 @@
             </div>
           }
 
+          <!-- ── Parameters & local variables ── -->
+          @if (mockableLocals().length > 0) {
+            <div class="px-3 pt-3 pb-1">
+              <div class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-info/70 mb-2">
+                <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                </svg>
+                Params &amp; local vars
+              </div>
+              <p class="text-[10px] text-base-content/20 mb-2">
+                Leave empty → undefined. Use <span class="font-mono">&#123;"k":"v"&#125;</span> for objects.
+              </p>
+
+              <div class="space-y-1.5">
+                @for (loc of mockableLocals(); track loc.name) {
+                  <div class="rounded-lg border px-3 py-2"
+                       [style.border-color]="loc.inCondition ? 'rgba(59,130,246,0.4)' : 'rgba(255,255,255,0.08)'"
+                       [style.background]="loc.inCondition ? 'rgba(59,130,246,0.04)' : 'rgba(255,255,255,0.02)'">
+                    <div class="flex items-center gap-1.5 mb-1.5">
+                      <svg class="w-2.5 h-2.5 flex-none"
+                           [class.text-info]="loc.inCondition"
+                           [class.text-base-content/25]="!loc.inCondition"
+                           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25"/>
+                      </svg>
+                      <span class="font-mono text-xs font-semibold"
+                            [class.text-base-content/80]="loc.inCondition"
+                            [class.text-base-content/45]="!loc.inCondition">{{ loc.name }}</span>
+                      @if (loc.isParam) {
+                        <span class="badge badge-info badge-xs ml-auto">param</span>
+                      } @else {
+                        <span class="badge badge-ghost badge-xs ml-auto">local</span>
+                      }
+                    </div>
+                    @if (loc.initExpr) {
+                      <div class="text-[10px] text-base-content/20 font-mono mb-1.5 truncate">
+                        = {{ loc.initExpr }}
+                      </div>
+                    }
+                    <input
+                      type="text"
+                      class="input input-xs input-bordered font-mono w-full"
+                      placeholder="mock value… (empty = undefined)"
+                      [value]="simValues()[loc.name] ?? ''"
+                      (input)="onSimInput(loc.name, $event)"
+                    />
+                  </div>
+                }
+              </div>
+            </div>
+          }
+
+          <!-- Type hint -->
           <div class="text-[10px] text-base-content/20 px-4 pt-3 space-y-0.5">
             <p>Accepted: <span class="font-mono">true · false · 42 · "text"</span></p>
             <p class="font-mono">null · [1,2,3] · &#123;"k":"v"&#125;</p>
@@ -615,11 +670,12 @@
         <!-- Return / throw result card -->
         @if (returnResult() && playState() !== 'idle') {
           @let r = returnResult()!;
-          <div class="mx-5 mt-4 flex-none card border transition-all duration-500"
+          <div class="mx-5 mt-4 flex-none card border transition-all duration-500 cursor-pointer select-none"
                [class.border-success]="r.value !== null && !r.isThrow && playState() === 'done'"
                [class.border-error]="r.isThrow && playState() === 'done'"
                [class.border-base-300]="playState() === 'playing'"
-               [style.background]="playState() === 'done' && !r.isThrow && r.value !== null ? 'rgba(34,197,94,0.05)' : playState() === 'done' && r.isThrow ? 'rgba(239,68,68,0.05)' : ''">
+               [style.background]="playState() === 'done' && !r.isThrow && r.value !== null ? 'rgba(34,197,94,0.05)' : playState() === 'done' && r.isThrow ? 'rgba(239,68,68,0.05)' : ''"
+               (click)="showResultDetail.update(v => !v)">
             <div class="card-body px-4 py-3 gap-1.5">
               <div class="flex items-center gap-2">
                 <span class="text-[10px] font-semibold tracking-widest text-base-content/40">
@@ -627,33 +683,57 @@
                 </span>
                 @if (playState() === 'done') {
                   @if (r.value !== null) {
-                    <div class="badge badge-xs" [class.badge-success]="!r.isThrow" [class.badge-error]="r.isThrow">
-                      evaluated ✓
-                    </div>
+                    <div class="badge badge-xs" [class.badge-success]="!r.isThrow" [class.badge-error]="r.isThrow">evaluated ✓</div>
                   } @else {
                     <div class="badge badge-neutral badge-xs">partially evaluated</div>
                   }
                 }
+                <div class="ml-auto text-[10px] text-base-content/30 flex items-center gap-1">
+                  {{ showResultDetail() ? 'hide state ▲' : 'inspect state ▼' }}
+                </div>
               </div>
 
               @if (r.value !== null) {
-                <!-- Evaluated value -->
                 <div class="font-mono text-base font-bold"
-                     [class.text-success]="!r.isThrow"
-                     [class.text-error]="r.isThrow">
+                     [class.text-success]="!r.isThrow" [class.text-error]="r.isThrow">
                   {{ r.value }}
                 </div>
                 @if (r.substituted !== r.value && r.substituted !== r.raw) {
                   <div class="text-[10px] text-base-content/35 font-mono">from: {{ r.substituted }}</div>
                 }
               } @else {
-                <!-- Could not fully evaluate -->
                 <div class="font-mono text-sm text-base-content/50">{{ r.substituted || r.raw }}</div>
-                @if (r.substituted && r.substituted.includes('this.')) {
+                @if (r.substituted && (r.substituted.includes('this.') || r.substituted.match(/\b[a-zA-Z]\w*\b/))) {
                   <div class="text-[10px] text-base-content/25">
-                    Unresolved <span class="font-mono">this.xxx</span> — add values on the left to evaluate fully
+                    Unresolved identifiers remain — add mock values on the left to evaluate fully
                   </div>
                 }
+              }
+
+              <!-- Expandable state snapshot -->
+              @if (showResultDetail() && allValueSnapshot().length > 0) {
+                <div class="border-t border-base-300/50 mt-2 pt-2 space-y-1">
+                  <div class="text-[10px] font-semibold uppercase tracking-widest text-base-content/30 mb-1.5">
+                    Active simulation values
+                  </div>
+                  @for (snap of allValueSnapshot(); track snap.name) {
+                    <div class="flex items-center gap-2 font-mono text-[10px]">
+                      <span class="badge badge-xs badge-ghost"
+                            [class.badge-primary]="snap.kind === 'prop'"
+                            [class.badge-info]="snap.kind === 'param'"
+                            [class.badge-secondary]="snap.kind === 'local'">
+                        {{ snap.kind }}
+                      </span>
+                      <span class="text-base-content/60">{{ snap.name }}</span>
+                      <span class="text-base-content/40">=</span>
+                      <span class="text-base-content/80 truncate max-w-[160px]">{{ snap.raw }}</span>
+                    </div>
+                  }
+                </div>
+              } @else if (showResultDetail() && allValueSnapshot().length === 0) {
+                <div class="border-t border-base-300/50 mt-2 pt-2 text-[10px] text-base-content/25 italic">
+                  No values have been set yet
+                </div>
               }
             </div>
           </div>
@@ -676,19 +756,19 @@
 
             <!-- Vertical guide line (full height) -->
             <div class="absolute top-4 bottom-4 pointer-events-none"
-                 style="left: 27px; width: 1px; background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.06) 8%, rgba(255,255,255,0.06) 92%, transparent)">
+                 style="left: 17px; width: 1px; background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.06) 8%, rgba(255,255,255,0.06) 92%, transparent)">
             </div>
 
             <!-- Progress fill — tracks animation position -->
             @if (playState() !== 'idle' && animProgressPct() > 0) {
               <div class="absolute top-4 pointer-events-none transition-all duration-500 ease-out"
-                   style="left: 27px; width: 2px; background: linear-gradient(to bottom, oklch(var(--color-primary)/0.6), oklch(var(--color-primary)/0.3))"
+                   style="left: 17px; width: 2px; background: linear-gradient(to bottom, oklch(var(--color-primary)/0.6), oklch(var(--color-primary)/0.3))"
                    [style.height.%]="animProgressPct()">
               </div>
             }
 
             <!-- Flow item list -->
-            <div class="space-y-1 font-mono text-xs pl-8">
+            <div class="space-y-1 font-mono text-xs pl-5">
               @for (item of displayItems(); track $index) {
                 @let isActive  = activeDisplayIdx()  === $index;
                 @let isVisited = visitedDisplayIdxs().has($index);
@@ -701,7 +781,7 @@
 
                   <!-- Dot on the guide line -->
                   <div class="absolute z-20 pointer-events-none"
-                       style="left: -28px; top: 50%; transform: translateY(-50%)">
+                       style="left: -18px; top: 50%; transform: translateY(-50%)">
                     @if (isActive) {
                       <!-- Pulsing active dot -->
                       <div class="relative" style="width:12px; height:12px">
@@ -726,7 +806,7 @@
                     <!-- ── CODE statement ── -->
                     @if (item.type === 'code') {
                       <div class="flex items-center gap-2 py-1 px-2 rounded transition-colors"
-                           [style.padding-left.px]="indent + 8"
+                           [style.padding-left.px]="indent + 2"
                            [style.background]="isActive ? 'rgba(99,102,241,0.08)' : ''">
                         <span class="text-base-content/20 select-none">▸</span>
                         <span [class.text-base-content/70]="isActive" [class.text-base-content/40]="!isActive">
